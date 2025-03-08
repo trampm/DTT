@@ -139,7 +139,10 @@ func (s *AuthService) handleDBError(op string, err error) error {
 	default:
 		if pqErr, ok := err.(*pq.Error); ok {
 			if pqErr.Code == "40001" { // Serialization failure (deadlock)
-				return err // Возвращаем оригинальную ошибку для обработки в WithTransactionRetry
+				return err
+			}
+			if pqErr.Code == "23505" { // Duplicate key value violates unique constraint
+				return err
 			}
 			return customerrors.ErrDatabaseConnection
 		}
