@@ -2,24 +2,21 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/lib/pq"
-
-	"backend/internal/auth/models"
-	customerrors "backend/pkg/errors"
-	"backend/pkg/logger"
-
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+
+	"backend/internal/auth/models"
+	customerrors "backend/pkg/errors" // Import custom errors package
+	"backend/pkg/logger"
+	"errors"
 )
 
 type AuthServiceInterface interface {
@@ -32,16 +29,16 @@ type AuthServiceInterface interface {
 	AssignPermissionToRole(ctx context.Context, roleID, permissionID uint) error
 	GetUserWithRole(email string) (*models.User, error)
 	GetUserWithRoleByID(userID uint) (*models.User, error)
-	GenerateRefreshToken(ctx context.Context, userID uint) (string, error) // Обновлено
+	GenerateRefreshToken(ctx context.Context, userID uint) (string, error)
 	ValidateRefreshToken(token string) (uint, error)
-	RevokeRefreshToken(ctx context.Context, token string) error // Обновлено
+	RevokeRefreshToken(ctx context.Context, token string) error
 	GetRolePermissionsRecursive(roleID uint) ([]string, error)
 	GetProfile(userID uint) (*models.ProfileResponse, error)
-	UpdateProfile(ctx context.Context, userID uint, update *models.UpdateProfileRequest) error // Обновлено
-	UpdateAvatar(ctx context.Context, userID uint, avatarURL string) error                     // Обновлено
-	InitiatePasswordReset(ctx context.Context, email string) error                             // Обновлено
+	UpdateProfile(ctx context.Context, userID uint, update *models.UpdateProfileRequest) error
+	UpdateAvatar(ctx context.Context, userID uint, avatarURL string) error
+	InitiatePasswordReset(ctx context.Context, email string) error
 	ValidateResetToken(token string) error
-	ResetPassword(ctx context.Context, token string, newPassword string) error // Обновлено
+	ResetPassword(ctx context.Context, token string, newPassword string) error
 	DB() DB
 }
 
@@ -66,7 +63,7 @@ type TransactionRetrier interface {
 
 type AuthService struct {
 	db    DB
-	dbRaw TransactionRetrier // Изменяем тип с *database.DB на интерфейс
+	dbRaw TransactionRetrier
 	cache sync.Map
 	dsn   string
 }
@@ -126,43 +123,19 @@ func (s *AuthService) startCacheCleaner() {
 	}()
 }
 
-func (s *AuthService) handleDBError(op string, err error) error {
-	if err == nil {
-		return nil
-	}
-	log.Printf("database error during %s: %v", op, err)
-	switch {
-	case errors.Is(err, gorm.ErrDuplicatedKey):
-		return customerrors.ErrUserExists
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		return customerrors.ErrUserNotFound
-	default:
-		if pqErr, ok := err.(*pq.Error); ok {
-			if pqErr.Code == "40001" { // Serialization failure (deadlock)
-				return err
-			}
-			if pqErr.Code == "23505" { // Duplicate key value violates unique constraint
-				return err
-			}
-			return customerrors.ErrDatabaseConnection
-		}
-		return customerrors.ErrDatabaseConnection
-	}
-}
-
 func (s *AuthService) hashPassword(password string) (string, error) {
 	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		log.Printf("failed to hash password: %v", err)
-		return "", customerrors.ErrTokenCreation
+		logger.Logger.Errorf("failed to hash password: %v", err)
+		return "", customerrors.WrapError(err, "token_creation_error", "Failed to hash password")
 	}
 	return string(hashedBytes), nil
 }
 
 func (s *AuthService) comparePasswords(hashedPassword, password string) error {
 	if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password)); err != nil {
-		log.Printf("password mismatch: %v", err)
-		return customerrors.ErrInvalidCredentials
+		logger.Logger.Infof("password mismatch: %v", err)
+		return customerrors.WrapError(customerrors.ErrInvalidCredentials, "invalid_credentials", "Password mismatch")
 	}
 	return nil
 }
@@ -173,7 +146,7 @@ func (s *AuthService) InitializeDatabase() error {
 
 	if err := s.db.Exec("SELECT 1").Error; err != nil {
 		logger.Logger.Errorf("Database connection check failed: %v", err)
-		return fmt.Errorf("failed to verify database connection: %w", err)
+		return fmt.Errorf("failed to verify database connection: %w", customerrors.WrapError(err, "database_error", "Database connection check failed"))
 	}
 
 	migrationPath := "file://./migrations"
@@ -181,7 +154,7 @@ func (s *AuthService) InitializeDatabase() error {
 	m, err := migrate.New(migrationPath, s.dsn)
 	if err != nil {
 		logger.Logger.Errorf("Failed to initialize migrations: %v", err)
-		return fmt.Errorf("failed to initialize migrations: %w", err)
+		return fmt.Errorf("failed to initialize migrations: %w", customerrors.WrapError(err, "migration_error", "Failed to initialize migrations"))
 	}
 
 	err = m.Up()
@@ -190,7 +163,7 @@ func (s *AuthService) InitializeDatabase() error {
 			logger.Logger.Infof("No new migrations to apply")
 		} else {
 			logger.Logger.Errorf("Failed to apply migrations: %v", err)
-			return fmt.Errorf("failed to apply migrations: %w", err)
+			return fmt.Errorf("failed to apply migrations: %w", customerrors.WrapError(err, "migration_error", "Failed to apply migrations"))
 		}
 	}
 
@@ -198,7 +171,7 @@ func (s *AuthService) InitializeDatabase() error {
 
 	if err := s.createAdminUserIfNotExists(); err != nil {
 		logger.Logger.Errorf("Failed to create admin user: %v", err)
-		return err
+		return fmt.Errorf("failed to create admin user: %w", err)
 	}
 
 	logger.Logger.InfoNoCtx("Database initialization completed successfully")
@@ -210,13 +183,14 @@ func (s *AuthService) createAdminUserIfNotExists() error {
 	return s.dbRaw.WithTransactionRetry(context.Background(), func(tx *gorm.DB) error {
 		var user models.User
 		if err := tx.First(&user, "email = ?", "admin@example.com").Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return s.handleDBError("find admin user", err)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				//return s.handleDBError("find admin user", err)
+				return fmt.Errorf("find admin user:%w", customerrors.WrapError(err, "not_found", "Admin user not found"))
 			}
 
 			hashedPassword, err := s.hashPassword("admin")
 			if err != nil {
-				return err
+				return fmt.Errorf("hash password:%w", err)
 			}
 
 			var adminRole models.Role
@@ -227,10 +201,11 @@ func (s *AuthService) createAdminUserIfNotExists() error {
 						Description: "Administrator with full access",
 					}
 					if err := tx.Create(&adminRole).Error; err != nil {
-						return s.handleDBError("create admin role", err)
+						return fmt.Errorf("create admin role:%w", customerrors.WrapError(err, "database_error", "Failed to create admin role"))
 					}
 				} else {
-					return s.handleDBError("find admin role", err)
+					//return s.handleDBError("find admin role", err)
+					return fmt.Errorf("find admin role:%w", customerrors.WrapError(err, "database_error", "Failed to find admin role"))
 				}
 			}
 
@@ -240,7 +215,10 @@ func (s *AuthService) createAdminUserIfNotExists() error {
 				RoleID:       &adminRole.ID,
 			}
 
-			return s.handleDBError("create admin user", tx.Create(adminUser).Error)
+			if err := tx.Create(adminUser).Error; err != nil {
+				//return s.handleDBError("create admin user", tx.Create(adminUser).Error)
+				return fmt.Errorf("create admin user:%w", customerrors.WrapError(err, "database_error", "Failed to create admin user"))
+			}
 		}
 		return nil
 	})
@@ -266,11 +244,13 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 					Description: "Default user role",
 				}
 				if err := tx.Create(&defaultRole).Error; err != nil {
-					return s.handleDBError("create default user role", err)
+					//return s.handleDBError("create default user role", err)
+					return fmt.Errorf("create default user role:%w", customerrors.WrapError(err, "database_error", "Failed to create default user role"))
 				}
 				logger.Logger.Infof("Role 'user' created successfully")
 			} else {
-				return s.handleDBError("find default user role", err)
+				//return s.handleDBError("find default user role", err)
+				return fmt.Errorf("find default user role:%w", customerrors.WrapError(err, "database_error", "Failed to find default user role"))
 			}
 		} else {
 			logger.Logger.Infof("Role 'user' found")
@@ -278,13 +258,15 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
-			return fmt.Errorf("failed to hash password: %w", err)
+			//return fmt.Errorf("failed to hash password: %w", err)
+			return fmt.Errorf("failed to hash password:%w", customerrors.WrapError(err, "hash_error", "Failed to hash password"))
 		}
 
 		user.PasswordHash = string(hashedPassword)
 		user.RoleID = &defaultRole.ID
 		if err := tx.Create(&user).Error; err != nil {
-			return s.handleDBError("create user", err)
+			//return s.handleDBError("create user", err)
+			return fmt.Errorf("create user:%w", customerrors.WrapError(err, "database_error", "Failed to create user"))
 		}
 		logger.Logger.Infof("User created successfully")
 
@@ -295,7 +277,8 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 func (s *AuthService) GetUserByEmail(email string) (*models.User, error) {
 	var user models.User
 	if err := s.db.First(&user, "email = ?", email).Error; err != nil {
-		return nil, s.handleDBError("find user", err)
+		//return nil, s.handleDBError("find user", err)
+		return nil, fmt.Errorf("find user:%w", customerrors.WrapError(err, "database_error", "Failed to find user"))
 	}
 	return &user, nil
 }
@@ -334,7 +317,8 @@ func (s *AuthService) CreateRole(ctx context.Context, name, description string) 
 			Description: description,
 		}
 		if err := tx.Create(role).Error; err != nil {
-			return s.handleDBError("create role", err)
+			//return s.handleDBError("create role", err)
+			return fmt.Errorf("create role:%w", customerrors.WrapError(err, "database_error", "Failed to create role"))
 		}
 		return nil
 	})
@@ -353,7 +337,8 @@ func (s *AuthService) CreatePermission(ctx context.Context, name, description st
 			Description: description,
 		}
 		if err := tx.Create(permission).Error; err != nil {
-			return s.handleDBError("create permission", err)
+			//return s.handleDBError("create permission", err)
+			return fmt.Errorf("create permission:%w", customerrors.WrapError(err, "database_error", "Failed to create permission"))
 		}
 		return nil
 	})
@@ -368,17 +353,20 @@ func (s *AuthService) AssignRoleToUser(ctx context.Context, userID, roleID uint)
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		var user models.User
 		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
-			return s.handleDBError("find user for role assignment", err)
+			//return s.handleDBError("find user for role assignment", err)
+			return fmt.Errorf("find user for role assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find user for role assignment"))
 		}
 
 		var role models.Role
 		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
-			return s.handleDBError("find role for assignment", err)
+			//return s.handleDBError("find role for assignment", err)
+			return fmt.Errorf("find role for assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find role for assignment"))
 		}
 
 		user.RoleID = &roleID
 		if err := tx.Save(&user).Error; err != nil {
-			return s.handleDBError("assign role to user", err)
+			//return s.handleDBError("assign role to user", err)
+			return fmt.Errorf("assign role to user:%w", customerrors.WrapError(err, "database_error", "Failed to assign role to user"))
 		}
 		return nil
 	})
@@ -392,7 +380,8 @@ func (s *AuthService) AssignPermissionToRole(ctx context.Context, roleID, permis
 			PermissionID: permissionID,
 		}
 		if err := tx.Create(rolePermission).Error; err != nil {
-			return s.handleDBError("assign permission to role", err)
+			//return s.handleDBError("assign permission to role", err)
+			return fmt.Errorf("assign permission to role:%w", customerrors.WrapError(err, "database_error", "Failed to assign permission to role"))
 		}
 		return nil
 	})
@@ -402,7 +391,8 @@ func (s *AuthService) AssignPermissionToRole(ctx context.Context, roleID, permis
 func (s *AuthService) GetUserWithRole(email string) (*models.User, error) {
 	var user models.User
 	if err := s.db.Preload("Role").First(&user, "email = ?", email).Error; err != nil {
-		return nil, s.handleDBError("find user with role", err)
+		//return nil, s.handleDBError("find user with role", err)
+		return nil, fmt.Errorf("find user with role:%w", customerrors.WrapError(err, "database_error", "Failed to find user with role"))
 	}
 	return &user, nil
 }
@@ -410,7 +400,8 @@ func (s *AuthService) GetUserWithRole(email string) (*models.User, error) {
 func (s *AuthService) GetUserWithRoleByID(userID uint) (*models.User, error) {
 	var user models.User
 	if err := s.db.Preload("Role").First(&user, "id = ?", userID).Error; err != nil {
-		return nil, s.handleDBError("find user with role by id", err)
+		//return nil, s.handleDBError("find user with role by id", err)
+		return nil, fmt.Errorf("find user with role by id:%w", customerrors.WrapError(err, "database_error", "Failed to find user with role by id"))
 	}
 	return &user, nil
 }
@@ -438,7 +429,8 @@ func (s *AuthService) GetRolePermissionsRecursive(roleID uint) ([]string, error)
 
 		var rolePermissions []models.RolePermission
 		if err := s.db.Find(&rolePermissions, "role_id = ?", id).Error; err != nil {
-			return s.handleDBError("find role permissions", err)
+			//return s.handleDBError("find role permissions", err)
+			return fmt.Errorf("find role permissions:%w", customerrors.WrapError(err, "database_error", "Failed to find role permissions"))
 		}
 
 		for _, rp := range rolePermissions {
@@ -450,7 +442,8 @@ func (s *AuthService) GetRolePermissionsRecursive(roleID uint) ([]string, error)
 
 		var role models.Role
 		if err := s.db.First(&role, "id = ?", id).Error; err != nil {
-			return s.handleDBError("find role", err)
+			//return s.handleDBError("find role", err)
+			return fmt.Errorf("find role:%w", customerrors.WrapError(err, "database_error", "Failed to find role"))
 		}
 
 		if role.ParentID != nil {
@@ -497,7 +490,8 @@ func (s *AuthService) GenerateRefreshToken(ctx context.Context, userID uint) (st
 		}
 
 		if err := tx.Create(refreshToken).Error; err != nil {
-			return s.handleDBError("create refresh token", err)
+			//return s.handleDBError("create refresh token", err)
+			return fmt.Errorf("create refresh token:%w", customerrors.WrapError(err, "database_error", "Failed to create refresh token"))
 		}
 		return nil
 	})
@@ -521,7 +515,8 @@ func (s *AuthService) ValidateRefreshToken(token string) (uint, error) {
 func (s *AuthService) RevokeRefreshToken(ctx context.Context, token string) error {
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		if err := tx.Delete(&models.RefreshToken{}, "token = ?", token).Error; err != nil {
-			return s.handleDBError("revoke refresh token", err)
+			//return s.handleDBError("revoke refresh token", err)
+			return fmt.Errorf("revoke refresh token:%w", customerrors.WrapError(err, "database_error", "Failed to revoke refresh token"))
 		}
 		return nil
 	})
@@ -539,7 +534,8 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 
 	var user models.User
 	if err := s.db.Preload("Role").Preload("Profile").First(&user, userID).Error; err != nil {
-		return nil, s.handleDBError("get user profile", err)
+		//return nil, s.handleDBError("get user profile", err)
+		return nil, fmt.Errorf("get user profile:%w", customerrors.WrapError(err, "database_error", "Failed to get user profile"))
 	}
 
 	response := &models.ProfileResponse{
@@ -570,7 +566,8 @@ func (s *AuthService) UpdateProfile(ctx context.Context, userID uint, update *mo
 		var profile models.Profile
 		err := tx.FirstOrCreate(&profile, models.Profile{UserID: userID}).Error
 		if err != nil {
-			return s.handleDBError("get or create profile", err)
+			//return s.handleDBError("get or create profile", err)
+			return fmt.Errorf("get or create profile:%w", customerrors.WrapError(err, "database_error", "Failed to get or create profile"))
 		}
 
 		profile.FirstName = update.FirstName
@@ -579,7 +576,8 @@ func (s *AuthService) UpdateProfile(ctx context.Context, userID uint, update *mo
 		profile.Bio = update.Bio
 
 		if err := tx.Save(&profile).Error; err != nil {
-			return s.handleDBError("update profile", err)
+			//return s.handleDBError("update profile", err)
+			return fmt.Errorf("update profile:%w", customerrors.WrapError(err, "database_error", "Failed to update profile"))
 		}
 
 		// Очистка кэша после обновления
@@ -596,12 +594,14 @@ func (s *AuthService) UpdateAvatar(ctx context.Context, userID uint, avatarURL s
 		var profile models.Profile
 		err := tx.FirstOrCreate(&profile, models.Profile{UserID: userID}).Error
 		if err != nil {
-			return s.handleDBError("get or create profile", err)
+			//return s.handleDBError("get or create profile", err)
+			return fmt.Errorf("get or create profile:%w", customerrors.WrapError(err, "database_error", "Failed to get or create profile"))
 		}
 
 		profile.Avatar = avatarURL
 		if err := tx.Save(&profile).Error; err != nil {
-			return s.handleDBError("update avatar", err)
+			//return s.handleDBError("update avatar", err)
+			return fmt.Errorf("update avatar:%w", customerrors.WrapError(err, "database_error", "Failed to update avatar"))
 		}
 
 		// Очистка кэша после обновления
@@ -628,7 +628,8 @@ func (s *AuthService) InitiatePasswordReset(ctx context.Context, email string) e
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil // Тихо игнорируем, если пользователь не найден
 			}
-			return s.handleDBError("find user for password reset", err)
+			//return s.handleDBError("find user for password reset", err)
+			return fmt.Errorf("find user for password reset:%w", customerrors.WrapError(err, "database_error", "Failed to find user for password reset"))
 		}
 
 		token := uuid.New().String()
@@ -642,7 +643,8 @@ func (s *AuthService) InitiatePasswordReset(ctx context.Context, email string) e
 		}
 
 		if err := tx.Create(resetToken).Error; err != nil {
-			return s.handleDBError("create password reset token", err)
+			//return s.handleDBError("create password reset token", err)
+			return fmt.Errorf("create password reset token:%w", customerrors.WrapError(err, "database_error", "Failed to create password reset token"))
 		}
 		logger.Logger.Infof("Password reset initiated for user %s", email)
 		return nil
@@ -666,7 +668,8 @@ func (s *AuthService) ResetPassword(ctx context.Context, token string, newPasswo
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return customerrors.ErrInvalidToken
 			}
-			return s.handleDBError("find reset token", err)
+			//return s.handleDBError("find reset token", err)
+			return fmt.Errorf("find reset token:%w", customerrors.WrapError(err, "database_error", "Failed to find reset token"))
 		}
 
 		if time.Now().After(resetToken.ExpiresAt) {
@@ -680,12 +683,14 @@ func (s *AuthService) ResetPassword(ctx context.Context, token string, newPasswo
 
 		if err := tx.Model(&models.User{}).Where("id = ?", resetToken.UserID).
 			Update("password_hash", hashedPassword).Error; err != nil {
-			return s.handleDBError("update password", err)
+			//return s.handleDBError("update password", err)
+			return fmt.Errorf("update password:%w", customerrors.WrapError(err, "database_error", "Failed to update password"))
 		}
 
 		resetToken.Used = true
 		if err := tx.Save(&resetToken).Error; err != nil {
-			return s.handleDBError("mark token as used", err)
+			//return s.handleDBError("mark token as used", err)
+			return fmt.Errorf("mark token as used:%w", customerrors.WrapError(err, "database_error", "Failed to mark token as used"))
 		}
 
 		return nil
@@ -702,7 +707,8 @@ func (s *AuthService) validateToken(table interface{}, token string, extraCondit
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return time.Time{}, customerrors.ErrInvalidToken
 		}
-		return time.Time{}, s.handleDBError("validate token", err)
+		//return time.Time{}, s.handleDBError("validate token", err)
+		return time.Time{}, fmt.Errorf("validate token:%w", customerrors.WrapError(err, "database_error", "Failed to validate token"))
 	}
 
 	// Предполагаем, что table имеет поле ExpiresAt

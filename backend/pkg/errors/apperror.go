@@ -17,7 +17,7 @@ func (e *AppError) Error() string {
 	return e.Message
 }
 
-func WrapError(err error, code, message string) *AppError {
+func WrapError(err error, code string, message string) *AppError {
 	return &AppError{
 		Code:    code,
 		Message: message,

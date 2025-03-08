@@ -58,6 +58,7 @@ func setupRouter(cfg *config.Config, authService service.AuthServiceInterface, h
 	r := gin.New()
 
 	r.Use(gin.Recovery())
+	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.RequestLogger())
 	r.Use(middleware.TraceMiddleware())
 	r.Use(metrics.PrometheusMiddleware())
