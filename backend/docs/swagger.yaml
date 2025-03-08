@@ -1,0 +1,651 @@
+basePath: /
+definitions:
+  models.ErrorResponse:
+    properties:
+      message:
+        type: string
+      status:
+        type: string
+    type: object
+  models.LoginRequest:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      password:
+        example: password123
+        minLength: 8
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  models.PasswordResetConfirm:
+    properties:
+      new_password:
+        description: |-
+          Новый пароль
+          required: true
+          example: newpassword123
+        minLength: 6
+        type: string
+      token:
+        description: |-
+          Токен сброса пароля
+          required: true
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        type: string
+    required:
+    - new_password
+    - token
+    type: object
+  models.PasswordResetRequest:
+    properties:
+      email:
+        description: |-
+          Email пользователя
+          required: true
+          example: user@example.com
+        type: string
+    required:
+    - email
+    type: object
+  models.PermissionAssignmentRequest:
+    properties:
+      permission_id:
+        description: |-
+          ID права
+          required: true
+          example: 1
+        example: 1
+        type: integer
+      role_id:
+        description: |-
+          ID роли
+          required: true
+          example: 2
+        example: 2
+        type: integer
+    required:
+    - permission_id
+    - role_id
+    type: object
+  models.PermissionRequest:
+    properties:
+      description:
+        description: |-
+          Описание права
+          example: Delete resources
+        example: Delete resources
+        type: string
+      name:
+        description: |-
+          Название права
+          required: true
+          example: delete
+        example: delete
+        type: string
+    required:
+    - name
+    type: object
+  models.ProfileResponse:
+    properties:
+      avatar:
+        type: string
+      bio:
+        type: string
+      email:
+        type: string
+      first_name:
+        type: string
+      id:
+        type: integer
+      last_name:
+        type: string
+      phone_number:
+        type: string
+      role:
+        type: string
+    type: object
+  models.RefreshRequest:
+    properties:
+      refresh_token:
+        description: |-
+          Refresh токен
+          required: true
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        type: string
+    required:
+    - refresh_token
+    type: object
+  models.RegisterRequest:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      name:
+        example: John Doe
+        type: string
+      password:
+        example: password123
+        minLength: 8
+        type: string
+    required:
+    - email
+    - name
+    - password
+    type: object
+  models.Role:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      parent:
+        $ref: '#/definitions/models.Role'
+      parent_id:
+        type: integer
+    type: object
+  models.RoleAssignmentRequest:
+    properties:
+      role_id:
+        description: |-
+          ID роли
+          required: true
+          example: 2
+        example: 2
+        type: integer
+      user_id:
+        description: |-
+          ID пользователя
+          required: true
+          example: 1
+        example: 1
+        type: integer
+    required:
+    - role_id
+    - user_id
+    type: object
+  models.RoleRequest:
+    properties:
+      description:
+        description: |-
+          Описание роли
+          example: Moderator with limited access
+        example: Moderator with limited access
+        type: string
+      name:
+        description: |-
+          Название роли
+          required: true
+          example: moderator
+        example: moderator
+        type: string
+    required:
+    - name
+    type: object
+  models.SuccessPermission:
+    properties:
+      message:
+        type: string
+      permission:
+        type: string
+    type: object
+  models.SuccessRole:
+    properties:
+      message:
+        type: string
+      role:
+        $ref: '#/definitions/models.Role'
+    type: object
+  models.UpdateProfileRequest:
+    properties:
+      bio:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      phone_number:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+  description: API сервер для DTT (Digital Task Tracker)
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  title: DTT API
+  version: "1.0"
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Аутентифицирует пользователя и возвращает access и refresh токены
+      parameters:
+      - description: Учетные данные
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/models.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешный логин с токенами
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Неверные учетные данные
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Аутентификация пользователя
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      consumes:
+      - application/json
+      description: Отзывает refresh-токен, завершая сессию пользователя
+      parameters:
+      - description: Refresh токен
+        in: body
+        name: refresh
+        required: true
+        schema:
+          $ref: '#/definitions/models.RefreshRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешный выход
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Неверный refresh-токен
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Выход из системы
+      tags:
+      - auth
+  /auth/password-reset:
+    post:
+      consumes:
+      - application/json
+      description: Отправляет токен для сброса пароля на email пользователя
+      parameters:
+      - description: Email пользователя
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.PasswordResetRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешная инициация сброса
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Инициация сброса пароля
+      tags:
+      - auth
+  /auth/password-reset/confirm:
+    post:
+      consumes:
+      - application/json
+      description: Устанавливает новый пароль с использованием токена сброса
+      parameters:
+      - description: Токен и новый пароль
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.PasswordResetConfirm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешный сброс пароля
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Неверный или истекший токен
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Сброс пароля
+      tags:
+      - auth
+  /auth/permissions:
+    post:
+      consumes:
+      - application/json
+      description: Создает новое право в системе
+      parameters:
+      - description: Данные права
+        in: body
+        name: permission
+        required: true
+        schema:
+          $ref: '#/definitions/models.PermissionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешное создание права
+          schema:
+            $ref: '#/definitions/models.SuccessPermission'
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Право уже существует
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Создание права
+      tags:
+      - auth
+  /auth/permissions/assign:
+    post:
+      consumes:
+      - application/json
+      description: Назначает указанное право роли
+      parameters:
+      - description: Данные назначения
+        in: body
+        name: assignment
+        required: true
+        schema:
+          $ref: '#/definitions/models.PermissionAssignmentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешное назначение права
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Роль или право не найдены
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Назначение права роли
+      tags:
+      - auth
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Обновляет access-токен используя refresh-токен
+      parameters:
+      - description: Refresh токен
+        in: body
+        name: refresh
+        required: true
+        schema:
+          $ref: '#/definitions/models.RefreshRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешное обновление токена
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Неверный или истекший refresh-токен
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Обновление токена
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Регистрирует нового пользователя в системе
+      parameters:
+      - description: Данные пользователя
+        in: body
+        name: user
+        required: true
+        schema:
+          $ref: '#/definitions/models.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешная регистрация
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Пользователь уже существует
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      summary: Регистрация пользователя
+      tags:
+      - auth
+  /auth/roles:
+    post:
+      consumes:
+      - application/json
+      description: Создает новую роль в системе
+      parameters:
+      - description: Данные роли
+        in: body
+        name: role
+        required: true
+        schema:
+          $ref: '#/definitions/models.RoleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешное создание роли
+          schema:
+            $ref: '#/definitions/models.SuccessRole'
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Роль уже существует
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Создание роли
+      tags:
+      - auth
+  /auth/roles/assign:
+    post:
+      consumes:
+      - application/json
+      description: Назначает указанную роль пользователю
+      parameters:
+      - description: Данные назначения
+        in: body
+        name: assignment
+        required: true
+        schema:
+          $ref: '#/definitions/models.RoleAssignmentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешное назначение роли
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Пользователь или роль не найдены
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Назначение роли пользователю
+      tags:
+      - auth
+  /profile:
+    get:
+      description: Получает профиль текущего пользователя
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешное получение профиля
+          schema:
+            $ref: '#/definitions/models.ProfileResponse'
+        "401":
+          description: Неавторизован
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Получение профиля
+      tags:
+      - profile
+    put:
+      consumes:
+      - application/json
+      description: Обновляет профиль текущего пользователя
+      parameters:
+      - description: Данные профиля
+        in: body
+        name: profile
+        required: true
+        schema:
+          $ref: '#/definitions/models.UpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешное обновление профиля
+          schema:
+            $ref: '#/definitions/models.ProfileResponse'
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Неавторизован
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Обновление профиля
+      tags:
+      - profile
+schemes:
+- http
+- https
+securityDefinitions:
+  Bearer:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
