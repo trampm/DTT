@@ -29,7 +29,7 @@ type AuthServiceInterface interface {
 	AssignPermissionToRole(ctx context.Context, roleID, permissionID uint) error
 	GetUserWithRole(email string) (*models.User, error)
 	GetUserWithRoleByID(userID uint) (*models.User, error)
-	GenerateRefreshToken(ctx context.Context, userID uint) (string, error)
+	GenerateRefreshToken(ctx context.Context, userID uint, ipAddress string, userAgent string) (string, error)
 	ValidateRefreshToken(token string) (uint, error)
 	RevokeRefreshToken(ctx context.Context, token string) error
 	GetRolePermissionsRecursive(roleID uint) ([]string, error)
@@ -142,11 +142,12 @@ func (s *AuthService) comparePasswords(hashedPassword, password string) error {
 
 // InitializeDatabase инициализирует базу данных
 func (s *AuthService) InitializeDatabase() error {
-	logger.Logger.InfoNoCtx("Starting database initialization")
+	ctx := context.Background() // Создаем контекст
+	logger.Logger.Info(context.Background(), "Starting database initialization")
 
 	if err := s.db.Exec("SELECT 1").Error; err != nil {
 		logger.Logger.Errorf("Database connection check failed: %v", err)
-		return fmt.Errorf("failed to verify database connection: %w", customerrors.WrapError(err, "database_error", "Database connection check failed"))
+		return fmt.Errorf("failed to verify database connection: %w", err)
 	}
 
 	migrationPath := "file://./migrations"
@@ -154,7 +155,7 @@ func (s *AuthService) InitializeDatabase() error {
 	m, err := migrate.New(migrationPath, s.dsn)
 	if err != nil {
 		logger.Logger.Errorf("Failed to initialize migrations: %v", err)
-		return fmt.Errorf("failed to initialize migrations: %w", customerrors.WrapError(err, "migration_error", "Failed to initialize migrations"))
+		return fmt.Errorf("failed to initialize migrations: %w", err)
 	}
 
 	err = m.Up()
@@ -163,24 +164,24 @@ func (s *AuthService) InitializeDatabase() error {
 			logger.Logger.Infof("No new migrations to apply")
 		} else {
 			logger.Logger.Errorf("Failed to apply migrations: %v", err)
-			return fmt.Errorf("failed to apply migrations: %w", customerrors.WrapError(err, "migration_error", "Failed to apply migrations"))
+			return fmt.Errorf("failed to apply migrations: %w", err)
 		}
 	}
 
-	logger.Logger.InfoNoCtx("Database migrations applied successfully")
+	logger.Logger.Info(ctx, "Database migrations applied successfully")
 
 	if err := s.createAdminUserIfNotExists(); err != nil {
 		logger.Logger.Errorf("Failed to create admin user: %v", err)
-		return fmt.Errorf("failed to create admin user: %w", err)
+		return err
 	}
 
-	logger.Logger.InfoNoCtx("Database initialization completed successfully")
+	logger.Logger.Info(ctx, "Database initialization completed successfully")
 	return nil
 }
 
 func (s *AuthService) createAdminUserIfNotExists() error {
-	// Используем context.Background(), так как это часть инициализации приложения
-	return s.dbRaw.WithTransactionRetry(context.Background(), func(tx *gorm.DB) error {
+	ctx := context.Background() // Создаем контекст
+	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		var user models.User
 		if err := tx.First(&user, "email = ?", "admin@example.com").Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -477,7 +478,7 @@ func (s *AuthService) GetRolePermissionsRecursive(roleID uint) ([]string, error)
 }
 
 // GenerateRefreshToken генерирует новый refresh-токен с использованием транзакции
-func (s *AuthService) GenerateRefreshToken(ctx context.Context, userID uint) (string, error) {
+func (s *AuthService) GenerateRefreshToken(ctx context.Context, userID uint, ipAddress string, userAgent string) (string, error) {
 	var token string
 	err := s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		token = uuid.New().String()
@@ -487,6 +488,8 @@ func (s *AuthService) GenerateRefreshToken(ctx context.Context, userID uint) (st
 			UserID:    userID,
 			Token:     token,
 			ExpiresAt: expiresAt,
+			IPAddress: ipAddress, // store the client IP
+			UserAgent: userAgent, // store the client user agent
 		}
 
 		if err := tx.Create(refreshToken).Error; err != nil {

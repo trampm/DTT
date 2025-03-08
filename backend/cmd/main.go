@@ -167,8 +167,8 @@ func run() error {
 	); err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
-	logger.Logger.InfoNoCtx("Initializing application")
-	logger.Logger.InfoNoCtx(fmt.Sprintf(
+	logger.Logger.Info(context.Background(), "Initializing application")
+	logger.Logger.Info(context.Background(), fmt.Sprintf(
 		"Logger initialized with level=%s, output=%s, maxSize=%dMB, maxBackups=%d, maxAge=%ddays, compress=%t, timezone=%s, format=%s",
 		cfg.LogLevel, cfg.LogOutput, cfg.LogRotateMaxSize, cfg.LogRotateMaxBackups, cfg.LogRotateMaxAge, cfg.LogRotateCompress, cfg.Timezone, cfg.LogFormat,
 	))
@@ -213,7 +213,7 @@ func run() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	logger.Logger.InfoNoCtx("Shutting down server...")
+	logger.Logger.Info(ctx, "Shutting down server...")
 
 	var ctxShutdown context.Context
 	ctxShutdown, cancel = context.WithTimeout(context.Background(), 5*time.Second)
@@ -223,7 +223,7 @@ func run() error {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
 
-	logger.Logger.InfoNoCtx("Server exited properly")
+	logger.Logger.Info(ctx, "Server exited properly")
 	return nil
 }
 

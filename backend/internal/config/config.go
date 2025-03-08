@@ -85,8 +85,9 @@ type Config struct {
 	LogRotateMaxBackups int    `validate:"gte=0"`
 	LogRotateMaxAge     int    `validate:"gte=0"`
 	LogRotateCompress   bool
-	Timezone            string `validate:"required"`
-	LogFormat           string `validate:"required,oneof=text json"`
+	Timezone            string        `validate:"required"`
+	LogFormat           string        `validate:"required,oneof=text json"`
+	AccessTokenLifetime time.Duration `validate:"required"`
 }
 
 // LoadConfig загружает конфигурацию из переменных окружения
@@ -104,7 +105,6 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	environment := parseEnvironment(viper.GetString("ENVIRONMENT"))
 	dbConfig := DatabaseConfig{
 		Host:                 viper.GetString("DB_HOST"),
 		Port:                 viper.GetInt("DB_PORT"),
@@ -139,6 +139,9 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("invalid timezone %s: %w", timezone, err)
 	}
 
+	environment := parseEnvironment(viper.GetString("ENVIRONMENT"))
+	accessTokenLifetime := duration(viper.GetString("ACCESS_TOKEN_LIFETIME"))
+
 	cfg := &Config{
 		Environment:         environment,
 		Database:            dbConfig,
@@ -157,6 +160,7 @@ func LoadConfig() (*Config, error) {
 		LogRotateCompress:   viper.GetBool("LOG_ROTATE_COMPRESS"),
 		Timezone:            timezone,
 		LogFormat:           viper.GetString("LOG_FORMAT"),
+		AccessTokenLifetime: accessTokenLifetime,
 	}
 
 	if err := cfg.validate(); err != nil {

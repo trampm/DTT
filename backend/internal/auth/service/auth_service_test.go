@@ -391,17 +391,19 @@ func TestGenerateRefreshToken_Success(t *testing.T) {
 
 	// Подготовка данных
 	userID := uint(1)
+	ipAddress := "127.0.0.1"       // Заглушка IP-адреса
+	userAgent := "Test User Agent" // Заглушка User-Agent
 
 	// Настройка ожиданий для sqlMock
 	sqlMock.ExpectBegin()
-	sqlMock.ExpectQuery(`INSERT INTO "refresh_tokens" \("created_at","updated_at","deleted_at","user_id","token","expires_at"\) VALUES \(\$1,\$2,\$3,\$4,\$5,\$6\) RETURNING "id"`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), nil, userID, sqlmock.AnyArg(), sqlmock.AnyArg()).
+	sqlMock.ExpectQuery(`INSERT INTO "refresh_tokens" \("created_at","updated_at","deleted_at","user_id","token","expires_at","ip_address","user_agent"\) VALUES \(\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8\) RETURNING "id"`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), nil, userID, sqlmock.AnyArg(), sqlmock.AnyArg(), ipAddress, userAgent).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	sqlMock.ExpectCommit()
 
 	// Выполнение теста
 	ctx := context.Background()
-	token, err := authService.GenerateRefreshToken(ctx, userID)
+	token, err := authService.GenerateRefreshToken(ctx, userID, ipAddress, userAgent)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, token)
 	assert.Equal(t, 36, len(token)) // UUID length
@@ -426,8 +428,10 @@ func TestValidateRefreshToken_Success(t *testing.T) {
 	}), &gorm.Config{})
 	assert.NoError(t, err)
 
-	// Настройка AuthService
+	// Создание моков
 	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+
+	// Настройка AuthService
 	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
 
 	// Подготовка данных

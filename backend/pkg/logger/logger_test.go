@@ -39,13 +39,6 @@ func TestLogger(t *testing.T) {
 			},
 			wantText: "test debug",
 		},
-		{
-			name: "InfoNoCtx",
-			logFunc: func() {
-				Logger.InfoNoCtx("test no ctx")
-			},
-			wantText: "test no ctx",
-		},
 	}
 
 	for _, tt := range tests {

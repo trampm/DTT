@@ -62,6 +62,8 @@ type RefreshToken struct {
 	UserID    uint      `gorm:"index"`
 	Token     string    `gorm:"uniqueIndex"`
 	ExpiresAt time.Time `gorm:"index"`
+	IPAddress string    // Add this
+	UserAgent string    // Add this
 }
 
 // RefreshRequest структура для запроса обновления токена

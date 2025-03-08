@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"backend/internal/auth/middleware"
 	"backend/internal/auth/models"
@@ -28,16 +28,34 @@ func NewAuthHandler(service service.AuthServiceInterface, cfg *config.Config) *A
 }
 
 // generateTokens генерирует access и refresh токены для пользователя
-func (h *AuthHandler) generateTokens(ctx context.Context, userID uint, roleName string, permissions []string) (string, string, error) {
-	accessToken, err := utils.GenerateToken(userID, roleName, permissions, h.Config.JWTSecretKey)
+func (h *AuthHandler) generateTokens(c *gin.Context, userID uint, roleName string, permissions []string) (string, string, error) {
+	accessToken, err := utils.GenerateToken(userID, roleName, permissions, h.Config.JWTSecretKey, h.Config.AccessTokenLifetime)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to generate access token: %w", err)
 	}
-	refreshToken, err := h.Service.GenerateRefreshToken(ctx, userID) // Используем переданный контекст
+
+	// Get the client's IP address and User-Agent
+	ipAddress := h.getClientIP(c)      // Use a method to safely extract the IP
+	userAgent := c.Request.UserAgent() // Get the User-Agent from the request
+
+	refreshToken, err := h.Service.GenerateRefreshToken(c.Request.Context(), userID, ipAddress, userAgent)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 	return accessToken, refreshToken, nil
+}
+
+func (h *AuthHandler) getClientIP(c *gin.Context) string {
+	ip := c.GetHeader("X-Forwarded-For")
+	if ip == "" {
+		ip = c.Request.RemoteAddr
+	}
+
+	parts := strings.Split(ip, ":")
+	if len(parts) > 0 {
+		ip = parts[0]
+	}
+	return ip
 }
 
 // Register регистрирует нового пользователя
@@ -119,7 +137,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, err := h.generateTokens(c.Request.Context(), user.ID, userWithRole.Role.Name, permissions)
+	accessToken, refreshToken, err := h.generateTokens(c, user.ID, userWithRole.Role.Name, permissions) // Modified line
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -306,7 +324,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, err := h.generateTokens(c.Request.Context(), userWithRole.ID, userWithRole.Role.Name, permissions)
+	accessToken, refreshToken, err := h.generateTokens(c, userWithRole.ID, userWithRole.Role.Name, permissions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

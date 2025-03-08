@@ -142,7 +142,7 @@ func (db *DB) StartMonitoring(ctx context.Context, interval time.Duration) {
 		for {
 			select {
 			case <-ctx.Done():
-				logger.Logger.InfoNoCtx("Database pool monitoring stopped")
+				logger.Logger.Info(context.Background(), "Database pool monitoring stopped")
 				return
 			case <-ticker.C:
 				db.updatePoolMetrics()
@@ -153,6 +153,94 @@ func (db *DB) StartMonitoring(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// Define custom type for context key
+type contextKey string
+
+const (
+	startTimeKey contextKey = "start_time"
+)
+
+// gormQueryMiddleware это middleware для GORM, для логирования запросов
+func gormQueryMiddleware(cfg *config.Config) func(db *gorm.DB) {
+	return func(db *gorm.DB) {
+		start := time.Now()
+		db.Statement.Context = context.WithValue(db.Statement.Context, startTimeKey, start) // Store start time in context
+
+		// After Hook
+		db.Callback().Query().After("gorm:after_query").Register("query_metrics", func(db *gorm.DB) {
+			startTime, ok := db.Statement.Context.Value(startTimeKey).(time.Time) // Retrieve start time
+			if !ok {
+				return // Skip if start time is not found
+			}
+
+			duration := time.Since(startTime).Seconds()
+			status := "success"
+			if db.Error != nil {
+				status = "error"
+			}
+
+			metrics.DatabaseQueriesTotal.WithLabelValues("query", status).Inc()
+			if cfg.Environment == config.Development {
+				logger.Logger.Infof("SQL Query: %s | Duration: %f seconds | Rows Affected: %d | Error: %v",
+					db.Dialector.Explain(db.Statement.SQL.String(), db.Statement.Vars...), duration, db.RowsAffected, db.Error)
+			}
+		})
+
+		db.Callback().Create().After("gorm:after_create").Register("create_metrics", func(db *gorm.DB) {
+			startTime, ok := db.Statement.Context.Value(startTimeKey).(time.Time) // Retrieve start time
+			if !ok {
+				return // Skip if start time is not found
+			}
+
+			duration := time.Since(startTime).Seconds()
+			status := "success"
+			if db.Error != nil {
+				status = "error"
+			}
+			metrics.DatabaseQueriesTotal.WithLabelValues("create", status).Inc()
+
+			if cfg.Environment == config.Development {
+				logger.Logger.Infof("SQL Create: %s | Duration: %f seconds | Rows Affected: %d | Error: %v",
+					db.Dialector.Explain(db.Statement.SQL.String(), db.Statement.Vars...), duration, db.RowsAffected, db.Error)
+			}
+		})
+		db.Callback().Update().After("gorm:after_update").Register("update_metrics", func(db *gorm.DB) {
+			startTime, ok := db.Statement.Context.Value(startTimeKey).(time.Time) // Retrieve start time
+			if !ok {
+				return // Skip if start time is not found
+			}
+
+			duration := time.Since(startTime).Seconds()
+			status := "success"
+			if db.Error != nil {
+				status = "error"
+			}
+			metrics.DatabaseQueriesTotal.WithLabelValues("update", status).Inc()
+			if cfg.Environment == config.Development {
+				logger.Logger.Infof("SQL Update: %s | Duration: %f seconds | Rows Affected: %d | Error: %v",
+					db.Dialector.Explain(db.Statement.SQL.String(), db.Statement.Vars...), duration, db.RowsAffected, db.Error)
+			}
+		})
+		db.Callback().Delete().After("gorm:after_delete").Register("delete_metrics", func(db *gorm.DB) {
+			startTime, ok := db.Statement.Context.Value(startTimeKey).(time.Time) // Retrieve start time
+			if !ok {
+				return // Skip if start time is not found
+			}
+
+			duration := time.Since(startTime).Seconds()
+			status := "success"
+			if db.Error != nil {
+				status = "error"
+			}
+			metrics.DatabaseQueriesTotal.WithLabelValues("delete", status).Inc()
+			if cfg.Environment == config.Development {
+				logger.Logger.Infof("SQL Delete: %s | Duration: %f seconds | Rows Affected: %d | Error: %v",
+					db.Dialector.Explain(db.Statement.SQL.String(), db.Statement.Vars...), duration, db.RowsAffected, db.Error)
+			}
+		})
+	}
 }
 
 // ConnectDB устанавливает соединение с базой данных
@@ -182,6 +270,9 @@ func ConnectDB(cfg *config.Config) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+
+	// Apply the middleware
+	gormQueryMiddleware(cfg)(db)
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -213,7 +304,7 @@ func ConnectDB(cfg *config.Config) (*DB, error) {
 	dbInstance := &DB{Client: db, sqlDB: sqlDB, config: cfg}
 	dbInstance.updatePoolMetrics()
 
-	logger.Logger.InfoNoCtx(fmt.Sprintf(
+	logger.Logger.Info(context.Background(), fmt.Sprintf(
 		"Database connected with maxOpenConns=%d, maxIdleConns=%d, connMaxLifetime=%s, connTimeout=%s, maxRetries=%d, retryDelay=%s",
 		cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.Database.ConnMaxLifetime, cfg.Database.ConnTimeout, cfg.Database.MaxRetries, cfg.Database.RetryDelay,
 	))

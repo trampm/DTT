@@ -261,18 +261,6 @@ func (l *AppLogger) Errorf(format string, args ...interface{}) {
 	l.logf(slog.LevelError, format, args...)
 }
 
-// Методы без контекста для обратной совместимости
-func (l *AppLogger) InfoNoCtx(msg string, attrs ...any) {
-	l.log(context.Background(), slog.LevelInfo, msg, attrs...)
-}
-
-func (l *AppLogger) ErrorNoCtx(msg string, err error, attrs ...any) {
-	if err != nil {
-		attrs = append(attrs, "error", err)
-	}
-	l.log(context.Background(), slog.LevelError, msg, attrs...)
-}
-
 // NewTestLogger создает новый логгер для тестов
 func NewTestLogger(w io.Writer) *AppLogger {
 	return NewLogger(Options{

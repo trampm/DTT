@@ -4,28 +4,34 @@ import (
 	"backend/pkg/logger"
 	"context"
 
+	"log/slog" // Import slog
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// TraceMiddleware добавляет trace_id в контекст запроса
+// TraceMiddleware добавляет trace_id и request_id в контекст запроса
 func TraceMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Проверяем, есть ли trace_id в заголовке X-Trace-ID (для совместимости с внешними системами)
 		traceID := c.GetHeader("X-Trace-ID")
 		if traceID == "" {
-			// Если заголовок отсутствует, генерируем новый trace_id
 			traceID = uuid.New().String()
 		}
 
-		// Добавляем trace_id в контекст для использования логгером
 		ctx := context.WithValue(c.Request.Context(), logger.TraceIDKey, traceID)
+		requestID := uuid.New().String()
+		ctx = context.WithValue(ctx, logger.RequestIDKey, requestID) // Добавляем request_id
+
 		c.Request = c.Request.WithContext(ctx)
-
-		// Добавляем trace_id в заголовок ответа для отладки
 		c.Header("X-Trace-ID", traceID)
+		c.Header("X-Request-ID", requestID) // Добавляем request_id в ответ
 
-		// Переходим к следующему обработчику
+		// Log the start of the request
+		logger.Logger.Info(ctx, "Request started", slog.String("method", c.Request.Method), slog.String("path", c.Request.URL.Path))
+
 		c.Next()
+
+		// Log the end of the request
+		logger.Logger.Info(ctx, "Request completed", slog.Int("status", c.Writer.Status()))
 	}
 }

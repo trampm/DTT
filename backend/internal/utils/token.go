@@ -15,13 +15,13 @@ type Claims struct {
 }
 
 // GenerateToken создает новый JWT токен
-func GenerateToken(userID uint, role string, permissions []string, secretKey string) (string, error) {
+func GenerateToken(userID uint, role string, permissions []string, secretKey string, accessTokenLifetime time.Duration) (string, error) {
 	claims := Claims{
 		UserID:      userID,
 		Role:        role,
 		Permissions: permissions,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenLifetime)), // Use the passed-in duration
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -52,8 +52,8 @@ func ValidateToken(tokenString, secretKey string) (uint, string, []string, error
 }
 
 // GenerateTokenForTest создает тестовый токен и возвращает ошибку, если генерация не удалась
-func GenerateTokenForTest(userID uint, role string, permissions []string, secretKey string) (string, error) {
-	token, err := GenerateToken(userID, role, permissions, secretKey)
+func GenerateTokenForTest(userID uint, role string, permissions []string, secretKey string, accessTokenLifetime time.Duration) (string, error) {
+	token, err := GenerateToken(userID, role, permissions, secretKey, accessTokenLifetime)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate test token: %w", err)
 	}
