@@ -490,3 +490,346 @@ func TestValidateRefreshToken_Expired(t *testing.T) {
 	// Проверка ожиданий
 	assert.NoError(t, sqlMock.ExpectationsWereMet())
 }
+func TestValidateRefreshToken_NotFound(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	token := "550e8400-e29b-41d4-a716-446655440000" // Пример UUID
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectQuery(`SELECT \* FROM "refresh_tokens" WHERE token = \$1 ORDER BY "refresh_tokens"."id" LIMIT \$2`).
+		WithArgs(token, 1).
+		WillReturnError(gorm.ErrRecordNotFound)
+
+	// Выполнение теста
+	returnedUserID, err := authService.ValidateRefreshToken(token)
+	assert.Error(t, err)
+	assert.Equal(t, uint(0), returnedUserID)
+	assert.Equal(t, customerrors.ErrInvalidToken, err)
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+func TestRevokeRefreshToken_Success(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	token := "550e8400-e29b-41d4-a716-446655440000" // Пример UUID
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectBegin()
+	sqlMock.ExpectExec(`DELETE FROM "refresh_tokens" WHERE token = \$1`).
+		WithArgs(token).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	sqlMock.ExpectCommit()
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.RevokeRefreshToken(ctx, token)
+	assert.NoError(t, err)
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+func TestRevokeRefreshToken_NotFound(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	token := "550e8400-e29b-41d4-a716-446655440000" // Пример UUID
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectBegin()
+	sqlMock.ExpectExec(`DELETE FROM "refresh_tokens" WHERE token = \$1`).
+		WithArgs(token).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // 0 строк удалено
+	sqlMock.ExpectCommit()
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.RevokeRefreshToken(ctx, token)
+	assert.NoError(t, err) // Предполагаем, что отсутствие токена не считается ошибкой
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+func TestRegisterUser_InvalidEmail(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных с некорректным email
+	invalidEmail := "invalid-email"
+	password := "password123"
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.RegisterUser(ctx, invalidEmail, password)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid email format")
+
+	// Проверка, что запросы к базе не выполнялись
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+func TestAuthenticateUser_InvalidEmail(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных с некорректным email
+	invalidEmail := "invalid-email"
+	password := "password123"
+
+	// Выполнение теста
+	_, err = authService.AuthenticateUser(invalidEmail, password)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid email format")
+
+	// Проверка, что запросы к базе не выполнялись
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+
+func TestInitiatePasswordReset_InvalidEmail(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных с некорректным email
+	invalidEmail := "invalid-email"
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.InitiatePasswordReset(ctx, invalidEmail)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid email format")
+
+	// Проверка, что запросы к базе не выполнялись
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+
+func TestInitiatePasswordReset_Success(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	email := "test@example.com"
+	userID := uint(1)
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectBegin()
+	sqlMock.ExpectQuery(`SELECT \* FROM "users" WHERE email = \$1 ORDER BY "users"."id" LIMIT \$2`).
+		WithArgs(email, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}).
+			AddRow(userID, email))
+	sqlMock.ExpectQuery(`INSERT INTO "password_resets" \("created_at","updated_at","deleted_at","user_id","token","expires_at","used"\) VALUES \(\$1,\$2,\$3,\$4,\$5,\$6,\$7\) RETURNING "id"`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), nil, userID, sqlmock.AnyArg(), sqlmock.AnyArg(), false).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	sqlMock.ExpectCommit()
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.InitiatePasswordReset(ctx, email)
+	assert.NoError(t, err)
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+
+func TestInitiatePasswordReset_UserNotFound(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	email := "nonexistent@example.com"
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectBegin()
+	sqlMock.ExpectQuery(`SELECT \* FROM "users" WHERE email = \$1 ORDER BY "users"."id" LIMIT \$2`).
+		WithArgs(email, 1).
+		WillReturnError(gorm.ErrRecordNotFound)
+	sqlMock.ExpectCommit()
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.InitiatePasswordReset(ctx, email)
+	assert.NoError(t, err)
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}
+
+func TestResetPassword_Success(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
+	}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Подготовка данных
+	token := "550e8400-e29b-41d4-a716-446655440000"
+	userID := uint(1)
+	newPassword := "newpassword123"
+	expiresAt := time.Now().Add(1 * time.Hour)
+
+	// Настройка ожиданий для sqlMock
+	sqlMock.ExpectBegin()
+	sqlMock.ExpectQuery(`SELECT \* FROM "password_resets" WHERE token = \$1 AND used = false ORDER BY "password_resets"."id" LIMIT \$2`).
+		WithArgs(token, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "token", "expires_at", "used"}).
+			AddRow(1, userID, token, expiresAt, false))
+	sqlMock.ExpectExec(`UPDATE "users" SET "password_hash"=\$1,"updated_at"=\$2 WHERE id = \$3`). // Обновлено
+													WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), userID). // Обновлено
+													WillReturnResult(sqlmock.NewResult(1, 1))
+	sqlMock.ExpectExec(`UPDATE "password_resets" SET "created_at"=\$1,"updated_at"=\$2,"deleted_at"=\$3,"user_id"=\$4,"token"=\$5,"expires_at"=\$6,"used"=\$7 WHERE "id" = \$8`). //Изменено
+																							WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), nil, userID, token, expiresAt, true, 1). //Изменено
+																							WillReturnResult(sqlmock.NewResult(1, 1))
+	sqlMock.ExpectCommit()
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.ResetPassword(ctx, token, newPassword)
+	assert.NoError(t, err)
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
+}

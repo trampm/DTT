@@ -160,18 +160,3 @@ func TestGetDSN(t *testing.T) {
 		})
 	}
 }
-
-func getRateLimitConfig(env Environment) RateLimitConfig {
-	switch env {
-	case Production:
-		return RateLimitConfig{
-			Requests: 100,
-			Period:   time.Minute,
-		}
-	default:
-		return RateLimitConfig{
-			Requests: 1000,
-			Period:   time.Minute,
-		}
-	}
-}

@@ -248,6 +248,14 @@ func (s *AuthService) createAdminUserIfNotExists() error {
 
 // RegisterUser регистрирует нового пользователя с использованием транзакции
 func (s *AuthService) RegisterUser(ctx context.Context, email, password string) error {
+	user := models.User{
+		Email: email, // Инициализируем только email для валидации
+	}
+	if err := user.Validate(); err != nil {
+		logger.Logger.Errorf("Invalid user data: %v", err)
+		return fmt.Errorf("registration failed: %w", err)
+	}
+
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		var defaultRole models.Role
 		if err := tx.First(&defaultRole, "name = ?", "user").Error; err != nil {
@@ -273,11 +281,8 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 			return fmt.Errorf("failed to hash password: %w", err)
 		}
 
-		user := models.User{
-			Email:        email,
-			PasswordHash: string(hashedPassword),
-			RoleID:       &defaultRole.ID,
-		}
+		user.PasswordHash = string(hashedPassword)
+		user.RoleID = &defaultRole.ID
 		if err := tx.Create(&user).Error; err != nil {
 			return s.handleDBError("create user", err)
 		}
@@ -295,9 +300,16 @@ func (s *AuthService) GetUserByEmail(email string) (*models.User, error) {
 	return &user, nil
 }
 
-// AuthenticateUser аутентифицирует пользователя (транзакция не требуется)
+// AuthenticateUser аутентифицирует пользователя
 func (s *AuthService) AuthenticateUser(email, password string) (*models.User, error) {
-	user := &models.User{}
+	user := &models.User{
+		Email: email,
+	}
+	if err := user.Validate(); err != nil {
+		logger.Logger.Errorf("Invalid email format: %v", err)
+		return nil, fmt.Errorf("authentication failed: %w", err)
+	}
+
 	result := s.db.First(user, "email = ?", email)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -602,9 +614,17 @@ func (s *AuthService) UpdateAvatar(ctx context.Context, userID uint, avatarURL s
 
 // InitiatePasswordReset инициирует процесс сброса пароля с использованием транзакции
 func (s *AuthService) InitiatePasswordReset(ctx context.Context, email string) error {
+	user := models.User{
+		Email: email,
+	}
+	if err := user.Validate(); err != nil {
+		logger.Logger.Errorf("Invalid email format: %v", err)
+		return fmt.Errorf("password reset failed: %w", err)
+	}
+
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
-		var user models.User
-		if err := tx.First(&user, "email = ?", email).Error; err != nil {
+		var dbUser models.User
+		if err := tx.First(&dbUser, "email = ?", email).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil // Тихо игнорируем, если пользователь не найден
 			}
@@ -615,7 +635,7 @@ func (s *AuthService) InitiatePasswordReset(ctx context.Context, email string) e
 		expiresAt := time.Now().Add(1 * time.Hour)
 
 		resetToken := &models.PasswordReset{
-			UserID:    user.ID,
+			UserID:    dbUser.ID,
 			Token:     token,
 			ExpiresAt: expiresAt,
 			Used:      false,

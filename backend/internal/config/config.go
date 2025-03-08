@@ -2,16 +2,14 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
 	"backend/pkg/logger"
 
 	"github.com/go-playground/validator/v10"
-	"github.com/joho/godotenv"
+	"github.com/spf13/viper"
 )
 
 // Environment представляет окружение приложения
@@ -35,25 +33,6 @@ func (e Environment) String() string {
 	default:
 		panic("unknown environment")
 	}
-}
-
-// envVar представляет переменную окружения с значением по умолчанию
-type envVar struct {
-	key      string
-	required bool
-	default_ string
-}
-
-// getEnv получает значение переменной окружения
-func getEnv(ev envVar) string {
-	val := os.Getenv(ev.key)
-	if val == "" {
-		if ev.required {
-			logger.Logger.Warnf("Required environment variable %s is not set", ev.key)
-		}
-		return ev.default_
-	}
-	return val
 }
 
 // CORSConfig содержит настройки CORS
@@ -112,20 +91,50 @@ type Config struct {
 
 // LoadConfig загружает конфигурацию из переменных окружения
 func LoadConfig() (*Config, error) {
-	env := getEnv(envVar{key: "ENVIRONMENT", default_: "development"})
-	if err := godotenv.Load(fmt.Sprintf(".env%s", getEnvFileSuffix(env))); err != nil {
-		logger.Logger.Warnf("Error loading %s file: %v", fmt.Sprintf(".env%s", getEnvFileSuffix(env)), err)
+	viper.SetConfigName(".env") // Имя файла конфигурации (без расширения)
+	viper.SetConfigType("env")  // Тип файла конфигурации (json, toml, yaml, env)
+	viper.AddConfigPath(".")    // Путь поиска файла конфигурации
+
+	viper.AutomaticEnv() // Читать переменные окружения
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			logger.Logger.Warnf("No .env file found, using environment variables.")
+		} else {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
+		}
 	}
 
-	environment := parseEnvironment(env)
-	dbConfig := loadDatabaseConfig()
-	corsConfig := loadCORSConfig()
-	rateLimitConfig, err := loadRateLimitConfig()
-	if err != nil {
-		return nil, err
+	environment := parseEnvironment(viper.GetString("ENVIRONMENT"))
+	dbConfig := DatabaseConfig{
+		Host:                 viper.GetString("DB_HOST"),
+		Port:                 viper.GetInt("DB_PORT"),
+		User:                 viper.GetString("DB_USER"),
+		Password:             viper.GetString("DB_PASSWORD"),
+		Name:                 viper.GetString("DB_NAME"),
+		SSLMode:              viper.GetString("DB_SSL_MODE"),
+		MaxOpenConns:         viper.GetInt("DB_MAX_OPEN_CONNS"),
+		MaxIdleConns:         viper.GetInt("DB_MAX_IDLE_CONNS"),
+		ConnMaxLifetime:      duration(viper.GetString("DB_CONN_MAX_LIFETIME")),
+		ConnTimeout:          duration(viper.GetString("DB_CONN_TIMEOUT")),
+		MaxRetries:           viper.GetInt("DB_MAX_RETRIES"),
+		RetryDelay:           duration(viper.GetString("DB_RETRY_DELAY")),
+		DeadlockLogLevel:     viper.GetString("DB_DEADLOCK_LOG_LEVEL"),
+		TimeoutLogLevel:      viper.GetString("DB_TIMEOUT_LOG_LEVEL"),
+		RetryAttemptLogLevel: viper.GetString("DB_RETRY_ATTEMPT_LOG_LEVEL"),
+	}
+	corsConfig := CORSConfig{
+		AllowOrigins:     strings.Split(viper.GetString("CORS_ORIGINS"), ","),
+		AllowCredentials: viper.GetBool("CORS_ALLOW_CREDENTIALS"),
+		MaxAge:           duration(viper.GetString("CORS_MAX_AGE")),
 	}
 
-	timezone := getEnv(envVar{key: "TIMEZONE", required: true, default_: "UTC"})
+	rateLimitConfig := RateLimitConfig{
+		Requests: viper.GetInt("RATE_LIMIT_REQUESTS"),
+		Period:   duration(viper.GetString("RATE_LIMIT_PERIOD")),
+		Enabled:  viper.GetBool("RATE_LIMIT_ENABLED"),
+	}
+
+	timezone := viper.GetString("TIMEZONE")
 	if _, err := time.LoadLocation(timezone); err != nil {
 		return nil, fmt.Errorf("invalid timezone %s: %w", timezone, err)
 	}
@@ -133,21 +142,21 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{
 		Environment:         environment,
 		Database:            dbConfig,
-		AppPort:             normalizePort(getEnv(envVar{key: "APP_PORT", required: true})),
-		JWTSecretKey:        getEnv(envVar{key: "JWT_SECRET_KEY", required: true}),
-		CSRFSecret:          getEnv(envVar{key: "CSRF_SECRET", required: true}),
+		AppPort:             normalizePort(viper.GetString("APP_PORT")),
+		JWTSecretKey:        viper.GetString("JWT_SECRET_KEY"),
+		CSRFSecret:          viper.GetString("CSRF_SECRET"),
 		CORS:                corsConfig,
-		RateLimit:           *rateLimitConfig,
-		SwaggerHost:         getEnv(envVar{key: "SWAGGER_HOST", required: true}),
-		LogLevel:            getEnv(envVar{key: "LOG_LEVEL", required: true, default_: "info"}),
-		LogOutput:           getEnv(envVar{key: "LOG_OUTPUT", required: true, default_: "console"}),
-		LogFilePath:         getEnv(envVar{key: "LOG_FILE_PATH", default_: "./logs/app.log"}),
-		LogRotateMaxSize:    parseIntWithDefault(getEnv(envVar{key: "LOG_ROTATE_MAX_SIZE", default_: "10"}), 10),
-		LogRotateMaxBackups: parseIntWithDefault(getEnv(envVar{key: "LOG_ROTATE_MAX_BACKUPS", default_: "3"}), 3),
-		LogRotateMaxAge:     parseIntWithDefault(getEnv(envVar{key: "LOG_ROTATE_MAX_AGE", default_: "7"}), 7),
-		LogRotateCompress:   parseBoolWithDefault(getEnv(envVar{key: "LOG_ROTATE_COMPRESS", default_: "true"}), true),
+		RateLimit:           rateLimitConfig,
+		SwaggerHost:         viper.GetString("SWAGGER_HOST"),
+		LogLevel:            viper.GetString("LOG_LEVEL"),
+		LogOutput:           viper.GetString("LOG_OUTPUT"),
+		LogFilePath:         viper.GetString("LOG_FILE_PATH"),
+		LogRotateMaxSize:    viper.GetInt("LOG_ROTATE_MAX_SIZE"),
+		LogRotateMaxBackups: viper.GetInt("LOG_ROTATE_MAX_BACKUPS"),
+		LogRotateMaxAge:     viper.GetInt("LOG_ROTATE_MAX_AGE"),
+		LogRotateCompress:   viper.GetBool("LOG_ROTATE_COMPRESS"),
 		Timezone:            timezone,
-		LogFormat:           getEnv(envVar{key: "LOG_FORMAT", required: true, default_: "text"}),
+		LogFormat:           viper.GetString("LOG_FORMAT"),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -157,68 +166,12 @@ func LoadConfig() (*Config, error) {
 	return cfg, nil
 }
 
-// loadDatabaseConfig загружает конфигурацию базы данных
-func loadDatabaseConfig() DatabaseConfig {
-	connMaxLifetime, _ := time.ParseDuration(getEnv(envVar{key: "DB_CONN_MAX_LIFETIME", default_: "5m"}))
-	connTimeout, _ := time.ParseDuration(getEnv(envVar{key: "DB_CONN_TIMEOUT", default_: "10s"}))
-	retryDelay, _ := time.ParseDuration(getEnv(envVar{key: "DB_RETRY_DELAY", default_: "1s"}))
-
-	return DatabaseConfig{
-		Host:                 getEnv(envVar{key: "DB_HOST", required: true}),
-		Port:                 parseIntWithDefault(getEnv(envVar{key: "DB_PORT", required: true}), 5432),
-		User:                 getEnv(envVar{key: "DB_USER", required: true}),
-		Password:             getEnv(envVar{key: "DB_PASSWORD", required: true}),
-		Name:                 getEnv(envVar{key: "DB_NAME", required: true}),
-		SSLMode:              getEnv(envVar{key: "DB_SSL_MODE", default_: "disable"}),
-		MaxOpenConns:         parseIntWithDefault(getEnv(envVar{key: "DB_MAX_OPEN_CONNS", default_: "25"}), 25),
-		MaxIdleConns:         parseIntWithDefault(getEnv(envVar{key: "DB_MAX_IDLE_CONNS", default_: "10"}), 10),
-		ConnMaxLifetime:      connMaxLifetime,
-		ConnTimeout:          connTimeout,
-		MaxRetries:           parseIntWithDefault(getEnv(envVar{key: "DB_MAX_RETRIES", default_: "3"}), 3),
-		RetryDelay:           retryDelay,
-		DeadlockLogLevel:     getEnv(envVar{key: "DB_DEADLOCK_LOG_LEVEL", default_: "error"}),
-		TimeoutLogLevel:      getEnv(envVar{key: "DB_TIMEOUT_LOG_LEVEL", default_: "warn"}),
-		RetryAttemptLogLevel: getEnv(envVar{key: "DB_RETRY_ATTEMPT_LOG_LEVEL", default_: "warn"}),
-	}
-}
-
-// loadCORSConfig загружает конфигурацию CORS
-func loadCORSConfig() CORSConfig {
-	origins := strings.Split(getEnv(envVar{key: "CORS_ORIGINS", required: true}), ",")
-
-	maxAgeStr := getEnv(envVar{key: "CORS_MAX_AGE", required: true})
-	maxAge, err := time.ParseDuration(maxAgeStr)
+func duration(s string) time.Duration {
+	d, err := time.ParseDuration(s)
 	if err != nil {
-		logger.Logger.Warnf("Invalid CORS_MAX_AGE format: %v, using default 1h", err)
-		maxAge = 1 * time.Hour
+		return 0
 	}
-
-	allowCredentials := parseBoolWithDefault(getEnv(envVar{key: "CORS_ALLOW_CREDENTIALS", default_: "true"}), true)
-
-	return CORSConfig{
-		AllowOrigins:     origins,
-		AllowCredentials: allowCredentials,
-		MaxAge:           maxAge,
-	}
-}
-
-// loadRateLimitConfig загружает конфигурацию Rate Limiting
-func loadRateLimitConfig() (*RateLimitConfig, error) {
-	periodStr := getEnv(envVar{key: "RATE_LIMIT_PERIOD", required: true})
-	period, err := time.ParseDuration(periodStr)
-	if err != nil {
-		logger.Logger.Warnf("Invalid RATE_LIMIT_PERIOD format: %v, using default 10m", err)
-		period = 10 * time.Minute
-	}
-
-	enabled := parseBoolWithDefault(getEnv(envVar{key: "RATE_LIMIT_ENABLED", default_: "false"}), false)
-	requests := parseIntWithDefault(getEnv(envVar{key: "RATE_LIMIT_REQUESTS", required: true}), 500)
-
-	return &RateLimitConfig{
-		Period:   period,
-		Requests: requests,
-		Enabled:  enabled,
-	}, nil
+	return d
 }
 
 // GetDSN возвращает строку подключения к базе данных для GORM
@@ -247,13 +200,6 @@ func (c *Config) GetMigrationDSN() string {
 
 // Вспомогательные функции
 
-func getEnvFileSuffix(env string) string {
-	if env == "development" {
-		return ""
-	}
-	return "." + env
-}
-
 func normalizePort(port string) string {
 	if port == "" {
 		return ":8080"
@@ -262,30 +208,6 @@ func normalizePort(port string) string {
 		return ":" + port
 	}
 	return port
-}
-
-func parseBoolWithDefault(s string, defaultVal bool) bool {
-	if s == "" {
-		return defaultVal
-	}
-	b, err := strconv.ParseBool(s)
-	if err != nil {
-		logger.Logger.Warnf("Failed to parse boolean: %s, using default value: %v", s, defaultVal)
-		return defaultVal
-	}
-	return b
-}
-
-func parseIntWithDefault(s string, defaultVal int) int {
-	if s == "" {
-		return defaultVal
-	}
-	i, err := strconv.Atoi(s)
-	if err != nil {
-		logger.Logger.Warnf("Failed to parse integer: %s, using default value: %d", s, defaultVal)
-		return defaultVal
-	}
-	return i
 }
 
 func parseEnvironment(env string) Environment {
