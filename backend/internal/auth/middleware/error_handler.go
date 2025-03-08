@@ -1,4 +1,3 @@
-// internal/auth/middleware/error_handler.go
 package middleware
 
 import (

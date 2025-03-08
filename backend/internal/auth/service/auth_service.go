@@ -225,10 +225,9 @@ func (s *AuthService) createAdminUserIfNotExists() error {
 	})
 }
 
-// RegisterUser регистрирует нового пользователя с использованием транзакции
 func (s *AuthService) RegisterUser(ctx context.Context, email, password string) error {
 	user := models.User{
-		Email: email, // Инициализируем только email для валидации
+		Email: email,
 	}
 	if err := user.Validate(); err != nil {
 		logger.Logger.Errorf("Invalid user data: %v", err)
@@ -245,13 +244,11 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 					Description: "Default user role",
 				}
 				if err := tx.Create(&defaultRole).Error; err != nil {
-					//return s.handleDBError("create default user role", err)
-					return fmt.Errorf("create default user role:%w", customerrors.WrapError(err, "database_error", "Failed to create default user role"))
+					return fmt.Errorf("create default user role: %w", err)
 				}
 				logger.Logger.Infof("Role 'user' created successfully")
 			} else {
-				//return s.handleDBError("find default user role", err)
-				return fmt.Errorf("find default user role:%w", customerrors.WrapError(err, "database_error", "Failed to find default user role"))
+				return fmt.Errorf("find default user role: %w", err)
 			}
 		} else {
 			logger.Logger.Infof("Role 'user' found")
@@ -259,15 +256,20 @@ func (s *AuthService) RegisterUser(ctx context.Context, email, password string) 
 
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
-			//return fmt.Errorf("failed to hash password: %w", err)
-			return fmt.Errorf("failed to hash password:%w", customerrors.WrapError(err, "hash_error", "Failed to hash password"))
+			return fmt.Errorf("failed to hash password: %w", err)
 		}
 
 		user.PasswordHash = string(hashedPassword)
 		user.RoleID = &defaultRole.ID
 		if err := tx.Create(&user).Error; err != nil {
-			//return s.handleDBError("create user", err)
-			return fmt.Errorf("create user:%w", customerrors.WrapError(err, "database_error", "Failed to create user"))
+			// Если пользователь не создан, удаляем созданную роль
+			if defaultRole.ID != 0 {
+				logger.Logger.Warnf("Deleting partially created role 'user'")
+				if delErr := tx.Delete(&defaultRole).Error; delErr != nil {
+					logger.Logger.Errorf("Failed to delete partially created role: %v", delErr)
+				}
+			}
+			return fmt.Errorf("create user: %w", err)
 		}
 		logger.Logger.Infof("User created successfully")
 

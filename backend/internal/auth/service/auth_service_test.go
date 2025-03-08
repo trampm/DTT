@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -34,33 +35,84 @@ func (m *MockTransactionRetrier) WithTransactionRetry(ctx context.Context, fn fu
 
 	var lastErr error
 	for i := 0; i < cfg.Database.MaxRetries; i++ {
+		logger.Logger.Infof("Transaction attempt %d/%d", i+1, cfg.Database.MaxRetries)
 		tx := m.gormDB.WithContext(ctx).Begin()
 		if tx.Error != nil {
+			logger.Logger.Errorf("Failed to begin transaction: %v", tx.Error)
 			return tx.Error
 		}
 
 		err := fn(tx)
-		if err != nil {
-			tx.Rollback()
-			lastErr = err
-			if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "40001" {
-				logger.Logger.Errorf("Deadlock detected in transaction: %s (Code: %s)", pqErr.Message, pqErr.Code)
-				logger.Logger.Infof("Attempt %d/%d failed for transaction: %v", i+1, cfg.Database.MaxRetries, err)
-				if i < cfg.Database.MaxRetries-1 {
-					time.Sleep(cfg.Database.RetryDelay)
-					continue
-				}
-				// Убираем return err, чтобы дойти до конца цикла
-			} else {
-				return err // Для не-дедлок ошибок возвращаем сразу
+		if err == nil {
+			if commitErr := tx.Commit().Error; commitErr != nil {
+				logger.Logger.Errorf("Failed to commit transaction: %v", commitErr)
+				return commitErr
 			}
-		} else if err := tx.Commit().Error; err != nil {
-			return err
-		} else {
 			return nil
 		}
+
+		// Откатываем транзакцию в случае ошибки
+		if rollbackErr := tx.Rollback().Error; rollbackErr != nil {
+			logger.Logger.Errorf("Failed to rollback transaction: %v", rollbackErr)
+			return rollbackErr
+		}
+
+		// Проверяем тип ошибки
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "40001" { // Serialization failure
+			logger.Logger.Errorf("Deadlock detected in transaction: %s (Code: %s)", pqErr.Message, pqErr.Code)
+			logger.Logger.Infof("Attempt %d/%d failed for transaction: %v", i+1, cfg.Database.MaxRetries, err)
+			lastErr = err
+			time.Sleep(cfg.Database.RetryDelay)
+			continue
+		}
+
+		// Если ошибка не связана с сериализацией, прекращаем попытки
+		return err
 	}
-	return fmt.Errorf("failed after %d attempts for transaction: %w", cfg.Database.MaxRetries, lastErr)
+
+	// Возвращаем ошибку после всех попыток
+	return fmt.Errorf("failed after %d attempts for transaction: %v", cfg.Database.MaxRetries, lastErr)
+}
+
+func TestRegisterUser_DeadlockExhausted(t *testing.T) {
+	// Инициализация логгера
+	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
+	assert.NoError(t, err)
+
+	// Создание mock базы данных
+	sqlDB, sqlMock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer sqlDB.Close()
+
+	// Создание GORM с моковой базой
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{})
+	assert.NoError(t, err)
+
+	// Настройка AuthService
+	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
+	authService := NewAuthService(gormDB, mockRetrier, "mock_dsn")
+
+	// Настройка ожиданий для sqlMock: три попытки с дедлоком
+	for i := 0; i < 3; i++ {
+		sqlMock.ExpectBegin()
+		sqlMock.ExpectQuery(`SELECT \* FROM "roles" WHERE name = \$1 ORDER BY "roles"."id" LIMIT \$2`).
+			WithArgs("user", 1).
+			WillReturnError(&pq.Error{Code: "40001", Message: "serialization failure"})
+		sqlMock.ExpectRollback()
+	}
+
+	// Выполнение теста
+	ctx := context.Background()
+	err = authService.RegisterUser(ctx, "test@example.com", "password123")
+
+	// Проверка результата
+	expectedError := "failed after 3 attempts for transaction: find default user role: pq: serialization failure"
+	assert.Error(t, err)
+	assert.Equal(t, expectedError, err.Error())
+
+	// Проверка ожиданий
+	assert.NoError(t, sqlMock.ExpectationsWereMet())
 }
 
 func TestRegisterUser_ExistingRole(t *testing.T) {
@@ -106,47 +158,6 @@ func TestRegisterUser_ExistingRole(t *testing.T) {
 	assert.NoError(t, sqlMock.ExpectationsWereMet())
 }
 
-func TestRegisterUser_DeadlockExhausted(t *testing.T) {
-	// Инициализация логгера
-	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
-	assert.NoError(t, err)
-
-	// Создание mock базы данных
-	sqlDB, sqlMock, err := sqlmock.New()
-	assert.NoError(t, err)
-	defer sqlDB.Close()
-
-	// Создание GORM с моковой базой
-	gormDB, err := gorm.Open(postgres.New(postgres.Config{
-		Conn: sqlDB,
-	}), &gorm.Config{})
-	assert.NoError(t, err)
-
-	// Создание моков
-	mockDB := database.NewMockDB()
-	mockRetrier := &MockTransactionRetrier{gormDB: gormDB}
-
-	// Настройка AuthService
-	authService := NewAuthService(mockDB, mockRetrier, "mock_dsn")
-
-	// Настройка ожиданий для sqlMock: три попытки с дедлоком
-	for i := 0; i < 3; i++ {
-		sqlMock.ExpectBegin()
-		sqlMock.ExpectQuery(`SELECT \* FROM "roles" WHERE name = \$1 ORDER BY "roles"."id" LIMIT \$2`).
-			WithArgs("user", 1).
-			WillReturnError(&pq.Error{Code: "40001", Message: "serialization failure"})
-		sqlMock.ExpectRollback()
-	}
-
-	// Выполнение теста
-	ctx := context.Background()
-	err = authService.RegisterUser(ctx, "test@example.com", "password123")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
-
-	// Проверка ожиданий
-	assert.NoError(t, sqlMock.ExpectationsWereMet())
-}
 func TestRegisterUser_UserCreationError(t *testing.T) {
 	// Инициализация логгера
 	err := logger.InitLogger("info", "console", "", 100, 10, 30, false, "UTC", "text")
@@ -298,9 +309,7 @@ func TestAuthenticateUser_InvalidCredentials(t *testing.T) {
 	defer sqlDB.Close()
 
 	// Создание GORM с моковой базой
-	gormDB, err := gorm.Open(postgres.New(postgres.Config{
-		Conn: sqlDB,
-	}), &gorm.Config{})
+	gormDB, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{})
 	assert.NoError(t, err)
 
 	// Настройка AuthService
@@ -309,9 +318,8 @@ func TestAuthenticateUser_InvalidCredentials(t *testing.T) {
 
 	// Подготовка данных
 	email := "test@example.com"
-	password := "password123"
-	wrongPassword := "wrongpassword"
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	password := "wrongpassword"
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("correctpassword"), bcrypt.DefaultCost)
 	assert.NoError(t, err)
 
 	// Настройка ожиданий для sqlMock
@@ -320,11 +328,16 @@ func TestAuthenticateUser_InvalidCredentials(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "password_hash", "role_id"}).
 			AddRow(1, email, string(hashedPassword), 1))
 
-	// Выполнение теста с неверным паролем
-	user, err := authService.AuthenticateUser(email, wrongPassword)
-	assert.Error(t, err)
-	assert.Nil(t, user)
-	assert.Equal(t, customerrors.ErrInvalidCredentials, err)
+	// Выполнение теста
+	_, err = authService.AuthenticateUser(email, password)
+
+	// Проверка результата
+	var appErr *customerrors.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("Expected error of type *customerrors.AppError, got %T", err)
+	}
+	assert.Equal(t, "invalid_credentials", appErr.Code)
+	assert.Equal(t, "Password mismatch", appErr.Message)
 
 	// Проверка ожиданий
 	assert.NoError(t, sqlMock.ExpectationsWereMet())
