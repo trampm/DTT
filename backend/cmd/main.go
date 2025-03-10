@@ -106,6 +106,7 @@ func setupRouter(cfg *config.Config, authService service.AuthServiceInterface, h
 		authGroup.POST("/password-reset/confirm", middleware.BindJSON[models.PasswordResetConfirm](), authHandler.ResetPassword)
 		authGroup.POST("/roles/batch", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), authHandler.BatchCreateRoles)
 		authGroup.POST("/permissions/batch", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), authHandler.BatchCreatePermissions)
+		authGroup.PUT("/permissions/batch/update", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), authHandler.BatchUpdatePermissions)
 	}
 
 	profileGroup := r.Group("/profile")

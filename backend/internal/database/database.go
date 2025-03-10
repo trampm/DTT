@@ -31,6 +31,7 @@ type GormDB interface {
 	FirstOrCreate(dst interface{}, conds ...interface{}) *gorm.DB
 	Model(value interface{}) *gorm.DB
 	Where(query interface{}, args ...interface{}) *gorm.DB
+	WithContext(ctx context.Context) *gorm.DB
 }
 
 // DB структура для работы с базой данных
@@ -214,6 +215,61 @@ func (db *DB) StartMonitoring(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// AutoMigrate выполняет миграцию для указанных моделей
+func (db *DB) AutoMigrate(dst ...interface{}) error {
+	return db.Client.AutoMigrate(dst...)
+}
+
+// Create создает новую запись в базе данных
+func (db *DB) Create(value interface{}) *gorm.DB {
+	return db.Client.Create(value)
+}
+
+// First находит первую запись, соответствующую условиям
+func (db *DB) First(dst interface{}, conds ...interface{}) *gorm.DB {
+	return db.Client.First(dst, conds...)
+}
+
+// Exec выполняет SQL-запрос
+func (db *DB) Exec(sql string, vars ...interface{}) *gorm.DB {
+	return db.Client.Exec(sql, vars...)
+}
+
+// Save сохраняет запись в базе данных
+func (db *DB) Save(value interface{}) *gorm.DB {
+	return db.Client.Save(value)
+}
+
+// Preload выполняет предварительную загрузку связанных данных
+func (db *DB) Preload(query string, args ...interface{}) *gorm.DB {
+	return db.Client.Preload(query, args...)
+}
+
+// Find находит записи, соответствующие условиям
+func (db *DB) Find(dest interface{}, conds ...interface{}) *gorm.DB {
+	return db.Client.Find(dest, conds...)
+}
+
+// Delete удаляет записи из базы данных
+func (db *DB) Delete(value interface{}, conds ...interface{}) *gorm.DB {
+	return db.Client.Delete(value, conds...)
+}
+
+// FirstOrCreate находит первую запись или создает новую, если она не существует
+func (db *DB) FirstOrCreate(dst interface{}, conds ...interface{}) *gorm.DB {
+	return db.Client.FirstOrCreate(dst, conds...)
+}
+
+// Model задает модель для запроса
+func (db *DB) Model(value interface{}) *gorm.DB {
+	return db.Client.Model(value)
+}
+
+// Where добавляет условие WHERE к запросу
+func (db *DB) Where(query interface{}, args ...interface{}) *gorm.DB {
+	return db.Client.Where(query, args...)
 }
 
 // BatchCreate выполняет пакетное создание записей в одной транзакции

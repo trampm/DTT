@@ -358,6 +358,66 @@ const docTemplate = `{
                 }
             }
         },
+        "/auth/permissions/batch": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Создает несколько прав в системе пакетно",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Пакетное создание прав",
+                "parameters": [
+                    {
+                        "description": "Массив данных прав",
+                        "name": "permissions",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.PermissionRequest"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Успешное создание прав",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {
+                                    "$ref": "#/definitions/models.Permission"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Неверный ввод",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Внутренняя ошибка сервера",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/refresh": {
             "post": {
                 "security": [
@@ -586,51 +646,61 @@ const docTemplate = `{
         },
         "/auth/roles/batch": {
             "post": {
-                "security": [{"Bearer": []}],
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Создает несколько ролей в системе пакетно",
-                "consumes": ["application/json"],
-                "produces": ["application/json"],
-                "tags": ["auth"],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
                 "summary": "Пакетное создание ролей",
-                "parameters": [{
-                    "description": "Массив данных ролей",
-                    "name": "roles",
-                    "in": "body",
-                    "required": true,
-                    "schema": {
-                        "type": "array",
-                        "items": {"$ref": "#/definitions/models.RoleRequest"}
+                "parameters": [
+                    {
+                        "description": "Массив данных ролей",
+                        "name": "roles",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.RoleRequest"
+                            }
+                        }
                     }
-                }],
+                ],
                 "responses": {
-                    "201": {"description": "Успешное создание ролей", "schema": {"type": "object", "properties": {"roles": {"type": "array", "items": {"$ref": "#/definitions/models.Role"}}}}},
-                    "400": {"description": "Неверный ввод", "schema": {"$ref": "#/definitions/models.ErrorResponse"}},
-                    "500": {"description": "Внутренняя ошибка сервера", "schema": {"$ref": "#/definitions/models.ErrorResponse"}}
-                }
-            }
-        },
-        "/auth/permissions/batch": {
-            "post": {
-                "security": [{"Bearer": []}],
-                "description": "Создает несколько прав в системе пакетно",
-                "consumes": ["application/json"],
-                "produces": ["application/json"],
-                "tags": ["auth"],
-                "summary": "Пакетное создание прав",
-                "parameters": [{
-                    "description": "Массив данных прав",
-                    "name": "permissions",
-                    "in": "body",
-                    "required": true,
-                    "schema": {
-                        "type": "array",
-                        "items": {"$ref": "#/definitions/models.PermissionRequest"}
+                    "201": {
+                        "description": "Успешное создание ролей",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {
+                                    "$ref": "#/definitions/models.Role"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Неверный ввод",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Внутренняя ошибка сервера",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
                     }
-                }],
-                "responses": {
-                    "201": {"description": "Успешное создание прав", "schema": {"type": "object", "properties": {"permissions": {"type": "array", "items": {"$ref": "#/definitions/models.Permission"}}}}},
-                    "400": {"description": "Неверный ввод", "schema": {"$ref": "#/definitions/models.ErrorResponse"}},
-                    "500": {"description": "Внутренняя ошибка сервера", "schema": {"$ref": "#/definitions/models.ErrorResponse"}}
                 }
             }
         },
@@ -787,6 +857,17 @@ const docTemplate = `{
                 }
             }
         },
+        "models.Permission": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "models.PermissionAssignmentRequest": {
             "type": "object",
             "required": [
@@ -899,6 +980,9 @@ const docTemplate = `{
                 },
                 "parent": {
                     "$ref": "#/definitions/models.Role"
+                },
+                "parentRoleID": {
+                    "type": "integer"
                 },
                 "parent_id": {
                     "type": "integer"

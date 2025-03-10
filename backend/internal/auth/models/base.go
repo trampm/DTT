@@ -1,4 +1,3 @@
-// internal/auth/models/base.go
 package models
 
 import (

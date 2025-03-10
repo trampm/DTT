@@ -50,6 +50,13 @@ definitions:
     required:
     - email
     type: object
+  models.Permission:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+    type: object
   models.PermissionAssignmentRequest:
     properties:
       permission_id:
@@ -144,6 +151,8 @@ definitions:
       parent:
         $ref: '#/definitions/models.Role'
       parent_id:
+        type: integer
+      parentRoleID:
         type: integer
     type: object
   models.RoleAssignmentRequest:
@@ -437,6 +446,44 @@ paths:
       summary: Назначение права роли
       tags:
       - auth
+  /auth/permissions/batch:
+    post:
+      consumes:
+      - application/json
+      description: Создает несколько прав в системе пакетно
+      parameters:
+      - description: Массив данных прав
+        in: body
+        name: permissions
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/models.PermissionRequest'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешное создание прав
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/models.Permission'
+              type: array
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Пакетное создание прав
+      tags:
+      - auth
   /auth/refresh:
     post:
       consumes:
@@ -579,6 +626,44 @@ paths:
       security:
       - Bearer: []
       summary: Назначение роли пользователю
+      tags:
+      - auth
+  /auth/roles/batch:
+    post:
+      consumes:
+      - application/json
+      description: Создает несколько ролей в системе пакетно
+      parameters:
+      - description: Массив данных ролей
+        in: body
+        name: roles
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/models.RoleRequest'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешное создание ролей
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/models.Role'
+              type: array
+            type: object
+        "400":
+          description: Неверный ввод
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - Bearer: []
+      summary: Пакетное создание ролей
       tags:
       - auth
   /profile:

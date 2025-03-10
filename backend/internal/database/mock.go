@@ -2,6 +2,8 @@ package database
 
 import (
 	"backend/pkg/health"
+	"context"
+	"database/sql"
 
 	"github.com/stretchr/testify/mock"
 	"gorm.io/gorm"
@@ -19,6 +21,63 @@ var _ health.PingableDB = (*MockDB)(nil) // Уточняем пространс�
 // NewMockDB создает новый мок базы данных
 func NewMockDB() *MockDB {
 	return &MockDB{}
+}
+
+func (m *MockDB) Transaction(fc func(tx *gorm.DB) error, opts ...*sql.TxOptions) error {
+	args := m.Called(fc, opts)
+	// Создаем фиктивную транзакцию
+	tx := &gorm.DB{}
+	// Вызываем переданную функцию с моком транзакции
+	err := fc(tx)
+	if err != nil {
+		return err
+	}
+	return args.Error(1)
+}
+
+func (m *MockDB) BatchCreate(ctx context.Context, values interface{}) error {
+	args := m.Called(ctx, values)
+	return args.Error(0)
+}
+
+// WithContext возвращает тот же объект *gorm.DB (или мок)
+func (m *MockDB) WithContext(ctx context.Context) *gorm.DB {
+	args := m.Called(ctx)
+	if db, ok := args.Get(0).(*gorm.DB); ok {
+		return db
+	}
+	// Возвращаем пустой объект *gorm.DB с заполненным полем Error
+	return &gorm.DB{}
+}
+
+// Begin начинает транзакцию
+func (m *MockDB) Begin() *gorm.DB {
+	args := m.Called()
+	if db, ok := args.Get(0).(*gorm.DB); ok {
+		return db
+	}
+	// Возвращаем объект *gorm.DB с заполненным полем Error
+	return &gorm.DB{}
+}
+
+// Commit фиксирует транзакцию
+func (m *MockDB) Commit() *gorm.DB {
+	args := m.Called()
+	if db, ok := args.Get(0).(*gorm.DB); ok {
+		return db
+	}
+	// Возвращаем объект *gorm.DB:
+	return &gorm.DB{}
+}
+
+// Rollback откатывает транзакцию
+func (m *MockDB) Rollback() *gorm.DB {
+	args := m.Called()
+	if db, ok := args.Get(0).(*gorm.DB); ok {
+		return db
+	}
+	// Возвращаем объект *gorm.DB:
+	return &gorm.DB{}
 }
 
 // Ping реализует PingableDB

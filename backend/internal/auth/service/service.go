@@ -10,11 +10,11 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
+	"github.com/patrickmn/go-cache"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"backend/internal/auth/models"
-	"backend/internal/cache"
 	"backend/internal/database"
 	customerrors "backend/pkg/errors"
 	"backend/pkg/logger"
@@ -50,6 +50,13 @@ type AuthServiceInterface interface {
 		Name        string
 		Description string
 	}) ([]*models.Permission, error)
+	GetUserRoles(ctx context.Context, userID uint) ([]string, error)
+	GetUserPermissions(ctx context.Context, userID uint) (map[string]struct{}, error)
+	BatchUpdatePermissions(ctx context.Context, permissionsData []struct {
+		ID          uint
+		Name        string
+		Description string
+	}) ([]*models.Permission, error)
 }
 
 type DB interface {
@@ -64,6 +71,7 @@ type DB interface {
 	FirstOrCreate(dst interface{}, conds ...interface{}) *gorm.DB
 	Model(value interface{}) *gorm.DB
 	Where(query interface{}, args ...interface{}) *gorm.DB
+	WithContext(ctx context.Context) *gorm.DB
 }
 
 // TransactionRetrier интерфейс для выполнения транзакций с повторными попытками
@@ -72,16 +80,26 @@ type TransactionRetrier interface {
 }
 
 type AuthService struct {
-	db           DB
-	dbRaw        *database.DB
-	cache        *cache.Cache
-	profileCache sync.Map
-	dsn          string
+	db                    DB
+	dbRaw                 *database.DB
+	rolesPermissionsCache *cache.Cache
+	profileCache          sync.Map
+	dsn                   string
 }
 
 type cachedProfile struct {
 	Profile   *models.ProfileResponse
 	ExpiresAt time.Time
+}
+
+type cachedRoles struct {
+	Roles     []string
+	ExpiresAt time.Time
+}
+
+type cachedPermissions struct {
+	Permissions map[string]struct{}
+	ExpiresAt   time.Time
 }
 
 const (
@@ -93,13 +111,12 @@ var _ AuthServiceInterface = (*AuthService)(nil)
 // NewAuthService инициализирует сервис с кэшем и запускает очистку кэша
 func NewAuthService(db DB, dbRaw *database.DB, dsn string) AuthServiceInterface {
 	s := &AuthService{
-		db:           db,
-		dbRaw:        dbRaw,
-		cache:        cache.NewCache(dbRaw),
-		profileCache: sync.Map{},
-		dsn:          dsn,
+		db:                    db,
+		dbRaw:                 dbRaw,
+		rolesPermissionsCache: cache.New(5*time.Minute, 10*time.Minute),
+		profileCache:          sync.Map{},
+		dsn:                   dsn,
 	}
-	s.startCacheCleaner()
 	return s
 }
 
@@ -107,21 +124,10 @@ func (s *AuthService) DB() DB {
 	return s.db
 }
 
-// startCacheCleaner обновляем для работы только с profileCache
-func (s *AuthService) startCacheCleaner() {
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.profileCache.Range(func(key, value interface{}) bool {
-				cachedProfile := value.(cachedProfile)
-				if time.Now().After(cachedProfile.ExpiresAt) {
-					s.profileCache.Delete(key)
-				}
-				return true
-			})
-		}
-	}()
+// cacheWithTTL сохраняет данные в кэш с заданным TTL
+func (s *AuthService) cacheWithTTL(cache *sync.Map, key interface{}, value interface{}, ttl time.Duration) {
+	cache.Store(key, value)
+	logger.Logger.Debugf("Cached data for key=%v with TTL=%s", key, ttl)
 }
 
 func (s *AuthService) hashPassword(password string) (string, error) {
@@ -324,12 +330,8 @@ func (s *AuthService) CreateRole(ctx context.Context, name, description string) 
 			return fmt.Errorf("create role:%w", customerrors.WrapError(err, "database_error", "Failed to create role"))
 		}
 		// Обновляем кэш после создания
-		s.cache.Roles.Store(int(role.ID), cache.Role{
-			ID:          int(role.ID),
-			Name:        role.Name,
-			Description: role.Description,
-			UpdatedAt:   time.Now(),
-		})
+		cacheKey := fmt.Sprintf("role:%d", role.ID)
+		s.rolesPermissionsCache.Set(cacheKey, role, cache.DefaultExpiration)
 		return nil
 	})
 	if err != nil {
@@ -350,12 +352,8 @@ func (s *AuthService) CreatePermission(ctx context.Context, name, description st
 			return fmt.Errorf("create permission:%w", customerrors.WrapError(err, "database_error", "Failed to create permission"))
 		}
 		// Обновляем кэш после создания
-		s.cache.Permissions.Store(int(permission.ID), cache.Permission{
-			ID:          int(permission.ID),
-			Name:        permission.Name,
-			Description: permission.Description,
-			UpdatedAt:   time.Now(),
-		})
+		cacheKey := fmt.Sprintf("permission:%d", permission.ID)
+		s.rolesPermissionsCache.Set(cacheKey, permission, cache.DefaultExpiration)
 		return nil
 	})
 	if err != nil {
@@ -371,21 +369,19 @@ func (s *AuthService) AssignRoleToUser(ctx context.Context, userID, roleID uint)
 		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
 			return fmt.Errorf("find user for role assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find user for role assignment"))
 		}
-
 		var role models.Role
 		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
 			return fmt.Errorf("find role for assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find role for assignment"))
 		}
-
 		user.RoleID = &roleID
 		if err := tx.Save(&user).Error; err != nil {
 			return fmt.Errorf("assign role to user:%w", customerrors.WrapError(err, "database_error", "Failed to assign role to user"))
 		}
-
-		// Инвалидация кэша профиля, так как роль изменилась
+		// Инвалидация кэша профиля и ролей
 		cacheKey := fmt.Sprintf("profile:%d", userID)
 		s.profileCache.Delete(cacheKey)
-
+		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_roles:%d", userID))
+		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", userID))
 		return nil
 	})
 }
@@ -400,12 +396,70 @@ func (s *AuthService) AssignPermissionToRole(ctx context.Context, roleID, permis
 		if err := tx.Create(rolePermission).Error; err != nil {
 			return fmt.Errorf("assign permission to role:%w", customerrors.WrapError(err, "database_error", "Failed to assign permission to role"))
 		}
-
-		// Инвалидация кэша роли, так как её разрешения изменились
-		s.cache.InvalidateRole(int(roleID))
-
+		// Инвалидация кэша роли и прав всех пользователей с этой ролью
+		s.invalidateUsersWithRole(ctx, roleID)
 		return nil
 	})
+}
+
+// invalidateUsersWithRole инвалидирует кэш прав пользователей с указанной ролью
+func (s *AuthService) invalidateUsersWithRole(ctx context.Context, roleID uint) {
+	var users []models.User
+	if err := s.db.Where("role_id = ?", roleID).Find(&users).Error; err == nil {
+		for _, user := range users {
+			s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", user.ID))
+		}
+	}
+}
+
+// GetUserRoles возвращает роли пользователя с кэшированием
+func (s *AuthService) GetUserRoles(ctx context.Context, userID uint) ([]string, error) {
+	cacheKey := fmt.Sprintf("user_roles:%d", userID)
+	if cached, found := s.rolesPermissionsCache.Get(cacheKey); found {
+		roles := cached.([]string)
+		logger.Logger.Debug(ctx, "Cache hit for user roles", "user_id", userID)
+		return roles, nil
+	}
+	var user models.User
+	if err := s.db.WithContext(ctx).Preload("Role").First(&user, userID).Error; err != nil {
+		logger.Logger.Errorf("Failed to fetch user roles for userID=%d: %v", userID, err)
+		return nil, fmt.Errorf("failed to fetch user roles: %w", err)
+	}
+	var roles []string
+	if user.RoleID != nil && user.Role.Name != "" {
+		roles = []string{user.Role.Name}
+	} else {
+		roles = []string{}
+	}
+	s.rolesPermissionsCache.Set(cacheKey, roles, cache.DefaultExpiration)
+	return roles, nil
+}
+
+// GetUserPermissions возвращает права пользователя с кэшированием
+func (s *AuthService) GetUserPermissions(ctx context.Context, userID uint) (map[string]struct{}, error) {
+	cacheKey := fmt.Sprintf("user_permissions:%d", userID)
+	if cached, found := s.rolesPermissionsCache.Get(cacheKey); found {
+		permissions := cached.(map[string]struct{})
+		logger.Logger.Debug(ctx, "Cache hit for user permissions", "user_id", userID)
+		return permissions, nil
+	}
+	var user models.User
+	if err := s.db.WithContext(ctx).Preload("Role").First(&user, userID).Error; err != nil {
+		logger.Logger.Errorf("Failed to fetch user for permissions userID=%d: %v", userID, err)
+		return nil, fmt.Errorf("failed to fetch user for permissions: %w", err)
+	}
+	var permissions map[string]struct{}
+	if user.RoleID != nil {
+		var err error
+		permissions, err = s.GetRolePermissionsRecursive(*user.RoleID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		permissions = make(map[string]struct{})
+	}
+	s.rolesPermissionsCache.Set(cacheKey, permissions, cache.DefaultExpiration)
+	return permissions, nil
 }
 
 // GetUserWithRole получает пользователя с ролью
@@ -429,6 +483,13 @@ func (s *AuthService) GetUserWithRoleByID(userID uint) (*models.User, error) {
 
 // GetRolePermissionsRecursive рекурсивно собирает все права роли, включая унаследованные, с использованием кэша
 func (s *AuthService) GetRolePermissionsRecursive(roleID uint) (map[string]struct{}, error) {
+	cacheKey := fmt.Sprintf("role_permissions:%d", roleID)
+	if cached, found := s.rolesPermissionsCache.Get(cacheKey); found {
+		permissions := cached.(map[string]struct{})
+		logger.Logger.Debug(context.Background(), "Cache hit for role permissions", "role_id", roleID)
+		return permissions, nil
+	}
+
 	permissions := make(map[string]struct{})
 
 	// Получаем разрешения роли
@@ -438,9 +499,9 @@ func (s *AuthService) GetRolePermissionsRecursive(roleID uint) (map[string]struc
 	}
 
 	for _, rp := range rolePerms {
-		perm, err := s.cache.GetPermission(int(rp.PermissionID))
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch permission from cache: %w", err)
+		var perm models.Permission
+		if err := s.db.First(&perm, rp.PermissionID).Error; err != nil {
+			return nil, fmt.Errorf("failed to fetch permission from database: %w", err)
 		}
 		permissions[perm.Name] = struct{}{}
 	}
@@ -460,6 +521,7 @@ func (s *AuthService) GetRolePermissionsRecursive(roleID uint) (map[string]struc
 		}
 	}
 
+	s.rolesPermissionsCache.Set(cacheKey, permissions, cache.DefaultExpiration)
 	return permissions, nil
 }
 
@@ -724,22 +786,14 @@ func (s *AuthService) BatchCreateRoles(ctx context.Context, rolesData []struct {
 			Description: data.Description,
 		}
 	}
-
 	err := s.dbRaw.BatchCreate(ctx, roles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch create roles: %w", err)
 	}
-
 	// Обновляем кэш для каждой созданной роли
 	for _, role := range roles {
-		s.cache.Roles.Store(int(role.ID), cache.Role{
-			ID:          int(role.ID),
-			Name:        role.Name,
-			Description: role.Description,
-			UpdatedAt:   time.Now(),
-		})
+		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_roles:%d", role.ID))
 	}
-
 	return roles, nil
 }
 
@@ -755,21 +809,41 @@ func (s *AuthService) BatchCreatePermissions(ctx context.Context, permissionsDat
 			Description: data.Description,
 		}
 	}
-
 	err := s.dbRaw.BatchCreate(ctx, permissions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch create permissions: %w", err)
 	}
-
 	// Обновляем кэш для каждого созданного права
 	for _, permission := range permissions {
-		s.cache.Permissions.Store(int(permission.ID), cache.Permission{
-			ID:          int(permission.ID),
-			Name:        permission.Name,
-			Description: permission.Description,
-			UpdatedAt:   time.Now(),
-		})
+		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", permission.ID))
 	}
+	return permissions, nil
+}
 
+func (s *AuthService) BatchUpdatePermissions(ctx context.Context, permissionsData []struct {
+	ID          uint
+	Name        string
+	Description string
+}) ([]*models.Permission, error) {
+	permissions := make([]*models.Permission, len(permissionsData))
+	for i, data := range permissionsData {
+		permissions[i] = &models.Permission{
+			BaseModel:   models.BaseModel{ID: data.ID},
+			Name:        data.Name,
+			Description: data.Description,
+		}
+	}
+	err := s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
+		for _, perm := range permissions {
+			if err := tx.Save(perm).Error; err != nil {
+				return fmt.Errorf("failed to update permission ID=%d: %w", perm.ID, err)
+			}
+			s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", perm.ID))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch update permissions: %w", err)
+	}
 	return permissions, nil
 }

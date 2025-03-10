@@ -57,6 +57,12 @@ type RolePermission struct {
 	PermissionID uint `gorm:"uniqueIndex:idx_role_permission"`
 }
 
+type PermissionUpdateRequest struct {
+	ID          uint   `json:"id" binding:"required"`
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
 // RefreshToken представляет refresh-токен для обновления сессии
 type RefreshToken struct {
 	BaseModel

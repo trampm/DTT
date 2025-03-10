@@ -569,3 +569,32 @@ func (h *AuthHandler) BatchCreatePermissions(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{"permissions": permissions})
 }
+
+func (h *AuthHandler) BatchUpdatePermissions(c *gin.Context) {
+	var req []models.PermissionUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input: " + err.Error()})
+		return
+	}
+
+	permissionsData := make([]struct {
+		ID          uint
+		Name        string
+		Description string
+	}, len(req))
+	for i, p := range req {
+		permissionsData[i] = struct {
+			ID          uint
+			Name        string
+			Description string
+		}{ID: p.ID, Name: p.Name, Description: p.Description}
+	}
+
+	permissions, err := h.Service.BatchUpdatePermissions(c.Request.Context(), permissionsData)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to batch update permissions: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"permissions": permissions})
+}
