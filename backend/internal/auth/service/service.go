@@ -92,16 +92,6 @@ type cachedProfile struct {
 	ExpiresAt time.Time
 }
 
-type cachedRoles struct {
-	Roles     []string
-	ExpiresAt time.Time
-}
-
-type cachedPermissions struct {
-	Permissions map[string]struct{}
-	ExpiresAt   time.Time
-}
-
 const (
 	cacheTTL = 5 * time.Minute
 )
@@ -122,12 +112,6 @@ func NewAuthService(db DB, dbRaw *database.DB, dsn string) AuthServiceInterface 
 
 func (s *AuthService) DB() DB {
 	return s.db
-}
-
-// cacheWithTTL сохраняет данные в кэш с заданным TTL
-func (s *AuthService) cacheWithTTL(cache *sync.Map, key interface{}, value interface{}, ttl time.Duration) {
-	cache.Store(key, value)
-	logger.Logger.Debugf("Cached data for key=%v with TTL=%s", key, ttl)
 }
 
 func (s *AuthService) hashPassword(password string) (string, error) {
