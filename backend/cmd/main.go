@@ -137,7 +137,7 @@ func initializeServices(cfg *config.Config) (*database.DB, service.AuthServiceIn
 
 	dsn := cfg.GetMigrationDSN()
 	logger.Logger.Infof("Initializing AuthService with migration DSN: %s", dsn)
-	authService := service.NewAuthService(db.Client, db, dsn) // db.Client как DB, db как TransactionRetrier
+	authService := service.NewAuthService(db.Client, db, dsn) // Уже работает с новым кэшем
 	if err := authService.InitializeDatabase(); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize database: %w", err)
 	}

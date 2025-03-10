@@ -14,7 +14,9 @@ import (
 	"gorm.io/gorm"
 
 	"backend/internal/auth/models"
-	customerrors "backend/pkg/errors" // Import custom errors package
+	"backend/internal/cache"
+	"backend/internal/database"
+	customerrors "backend/pkg/errors"
 	"backend/pkg/logger"
 	"errors"
 )
@@ -62,10 +64,11 @@ type TransactionRetrier interface {
 }
 
 type AuthService struct {
-	db    DB
-	dbRaw TransactionRetrier
-	cache sync.Map
-	dsn   string
+	db           DB
+	dbRaw        TransactionRetrier
+	cache        *cache.Cache
+	profileCache sync.Map
+	dsn          string
 }
 
 type cachedPermissions struct {
@@ -87,10 +90,11 @@ var _ AuthServiceInterface = (*AuthService)(nil)
 // NewAuthService инициализирует сервис с кэшем и запускает очистку кэша
 func NewAuthService(db DB, dbRaw TransactionRetrier, dsn string) AuthServiceInterface {
 	s := &AuthService{
-		db:    db,
-		dbRaw: dbRaw,
-		cache: sync.Map{},
-		dsn:   dsn,
+		db:           db,
+		dbRaw:        dbRaw,
+		cache:        cache.NewCache(dbRaw.(*database.DB)), // Инициализируем новый кэш
+		dsn:          dsn,
+		profileCache: sync.Map{},
 	}
 	s.startCacheCleaner()
 	return s
@@ -100,22 +104,16 @@ func (s *AuthService) DB() DB {
 	return s.db
 }
 
-// startCacheCleaner запускает фоновую очистку устаревших записей кэша
+// startCacheCleaner обновляем для работы только с profileCache
 func (s *AuthService) startCacheCleaner() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.cache.Range(func(key, value interface{}) bool {
-				switch v := value.(type) {
-				case cachedPermissions:
-					if time.Now().After(v.ExpiresAt) {
-						s.cache.Delete(key)
-					}
-				case cachedProfile:
-					if time.Now().After(v.ExpiresAt) {
-						s.cache.Delete(key)
-					}
+			s.profileCache.Range(func(key, value interface{}) bool {
+				cachedProfile := value.(cachedProfile)
+				if time.Now().After(cachedProfile.ExpiresAt) {
+					s.profileCache.Delete(key)
 				}
 				return true
 			})
@@ -320,9 +318,15 @@ func (s *AuthService) CreateRole(ctx context.Context, name, description string) 
 			Description: description,
 		}
 		if err := tx.Create(role).Error; err != nil {
-			//return s.handleDBError("create role", err)
 			return fmt.Errorf("create role:%w", customerrors.WrapError(err, "database_error", "Failed to create role"))
 		}
+		// Обновляем кэш после создания
+		s.cache.Roles.Store(int(role.ID), cache.Role{
+			ID:          int(role.ID),
+			Name:        role.Name,
+			Description: role.Description,
+			UpdatedAt:   time.Now(),
+		})
 		return nil
 	})
 	if err != nil {
@@ -340,9 +344,15 @@ func (s *AuthService) CreatePermission(ctx context.Context, name, description st
 			Description: description,
 		}
 		if err := tx.Create(permission).Error; err != nil {
-			//return s.handleDBError("create permission", err)
 			return fmt.Errorf("create permission:%w", customerrors.WrapError(err, "database_error", "Failed to create permission"))
 		}
+		// Обновляем кэш после создания
+		s.cache.Permissions.Store(int(permission.ID), cache.Permission{
+			ID:          int(permission.ID),
+			Name:        permission.Name,
+			Description: permission.Description,
+			UpdatedAt:   time.Now(),
+		})
 		return nil
 	})
 	if err != nil {
@@ -351,26 +361,28 @@ func (s *AuthService) CreatePermission(ctx context.Context, name, description st
 	return permission, nil
 }
 
-// AssignRoleToUser назначает роль пользователю с использованием транзакции
+// AssignRoleToUser назначает роль пользователю добавляем инвалидацию кэша профиля
 func (s *AuthService) AssignRoleToUser(ctx context.Context, userID, roleID uint) error {
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		var user models.User
 		if err := tx.First(&user, "id = ?", userID).Error; err != nil {
-			//return s.handleDBError("find user for role assignment", err)
 			return fmt.Errorf("find user for role assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find user for role assignment"))
 		}
 
 		var role models.Role
 		if err := tx.First(&role, "id = ?", roleID).Error; err != nil {
-			//return s.handleDBError("find role for assignment", err)
 			return fmt.Errorf("find role for assignment:%w", customerrors.WrapError(err, "not_found", "Failed to find role for assignment"))
 		}
 
 		user.RoleID = &roleID
 		if err := tx.Save(&user).Error; err != nil {
-			//return s.handleDBError("assign role to user", err)
 			return fmt.Errorf("assign role to user:%w", customerrors.WrapError(err, "database_error", "Failed to assign role to user"))
 		}
+
+		// Инвалидация кэша профиля, так как роль изменилась
+		cacheKey := fmt.Sprintf("profile:%d", userID)
+		s.profileCache.Delete(cacheKey)
+
 		return nil
 	})
 }
@@ -383,9 +395,12 @@ func (s *AuthService) AssignPermissionToRole(ctx context.Context, roleID, permis
 			PermissionID: permissionID,
 		}
 		if err := tx.Create(rolePermission).Error; err != nil {
-			//return s.handleDBError("assign permission to role", err)
 			return fmt.Errorf("assign permission to role:%w", customerrors.WrapError(err, "database_error", "Failed to assign permission to role"))
 		}
+
+		// Инвалидация кэша роли, так как её разрешения изменились
+		s.cache.InvalidateRole(int(roleID))
+
 		return nil
 	})
 }
@@ -413,22 +428,21 @@ func (s *AuthService) GetUserWithRoleByID(userID uint) (*models.User, error) {
 func (s *AuthService) GetRolePermissionsRecursive(roleID uint) (map[string]struct{}, error) {
 	permissions := make(map[string]struct{})
 
-	// Здесь должна быть логика получения разрешений из базы данных
-	// Например, через GORM рекурсивно собираем все разрешения роли
+	// Получаем разрешения роли
 	var rolePerms []models.RolePermission
 	if err := s.db.Where("role_id = ?", roleID).Find(&rolePerms).Error; err != nil {
 		return nil, fmt.Errorf("failed to fetch role permissions: %w", err)
 	}
 
 	for _, rp := range rolePerms {
-		var perm models.Permission
-		if err := s.db.First(&perm, rp.PermissionID).Error; err != nil {
-			return nil, fmt.Errorf("failed to fetch permission: %w", err)
+		perm, err := s.cache.GetPermission(int(rp.PermissionID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch permission from cache: %w", err)
 		}
 		permissions[perm.Name] = struct{}{}
 	}
 
-	// Рекурсивно добавить разрешения от родительских ролей, если они есть
+	// Рекурсивно добавляем разрешения от родительских ролей
 	var role models.Role
 	if err := s.db.First(&role, roleID).Error; err != nil {
 		return nil, fmt.Errorf("failed to fetch role: %w", err)
@@ -494,19 +508,19 @@ func (s *AuthService) RevokeRefreshToken(ctx context.Context, token string) erro
 	})
 }
 
+// GetProfile оставляем с использованием profileCache
 func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 	cacheKey := fmt.Sprintf("profile:%d", userID)
-	if cached, ok := s.cache.Load(cacheKey); ok {
+	if cached, ok := s.profileCache.Load(cacheKey); ok {
 		cachedProfile := cached.(cachedProfile)
 		if time.Now().Before(cachedProfile.ExpiresAt) {
 			return cachedProfile.Profile, nil
 		}
-		s.cache.Delete(cacheKey)
+		s.profileCache.Delete(cacheKey)
 	}
 
 	var user models.User
 	if err := s.db.Preload("Role").Preload("Profile").First(&user, userID).Error; err != nil {
-		//return nil, s.handleDBError("get user profile", err)
 		return nil, fmt.Errorf("get user profile:%w", customerrors.WrapError(err, "database_error", "Failed to get user profile"))
 	}
 
@@ -515,7 +529,6 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 		Email: user.Email,
 		Role:  user.Role.Name,
 	}
-
 	if user.Profile != nil {
 		response.FirstName = user.Profile.FirstName
 		response.LastName = user.Profile.LastName
@@ -524,7 +537,7 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 		response.Avatar = user.Profile.Avatar
 	}
 
-	s.cache.Store(cacheKey, cachedProfile{
+	s.profileCache.Store(cacheKey, cachedProfile{
 		Profile:   response,
 		ExpiresAt: time.Now().Add(cacheTTL),
 	})
@@ -532,13 +545,12 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 	return response, nil
 }
 
-// UpdateProfile обновляет профиль пользователя с использованием транзакции
+// UpdateProfile обновляем для инвалидации кэша
 func (s *AuthService) UpdateProfile(ctx context.Context, userID uint, update *models.UpdateProfileRequest) error {
 	return s.dbRaw.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
 		var profile models.Profile
 		err := tx.FirstOrCreate(&profile, models.Profile{UserID: userID}).Error
 		if err != nil {
-			//return s.handleDBError("get or create profile", err)
 			return fmt.Errorf("get or create profile:%w", customerrors.WrapError(err, "database_error", "Failed to get or create profile"))
 		}
 
@@ -548,13 +560,12 @@ func (s *AuthService) UpdateProfile(ctx context.Context, userID uint, update *mo
 		profile.Bio = update.Bio
 
 		if err := tx.Save(&profile).Error; err != nil {
-			//return s.handleDBError("update profile", err)
 			return fmt.Errorf("update profile:%w", customerrors.WrapError(err, "database_error", "Failed to update profile"))
 		}
 
-		// Очистка кэша после обновления
+		// Инвалидация кэша профиля
 		cacheKey := fmt.Sprintf("profile:%d", userID)
-		s.cache.Delete(cacheKey)
+		s.profileCache.Delete(cacheKey)
 
 		return nil
 	})
@@ -566,19 +577,17 @@ func (s *AuthService) UpdateAvatar(ctx context.Context, userID uint, avatarURL s
 		var profile models.Profile
 		err := tx.FirstOrCreate(&profile, models.Profile{UserID: userID}).Error
 		if err != nil {
-			//return s.handleDBError("get or create profile", err)
 			return fmt.Errorf("get or create profile:%w", customerrors.WrapError(err, "database_error", "Failed to get or create profile"))
 		}
 
 		profile.Avatar = avatarURL
 		if err := tx.Save(&profile).Error; err != nil {
-			//return s.handleDBError("update avatar", err)
 			return fmt.Errorf("update avatar:%w", customerrors.WrapError(err, "database_error", "Failed to update avatar"))
 		}
 
-		// Очистка кэша после обновления
+		// Очистка кэша профиля после обновления
 		cacheKey := fmt.Sprintf("profile:%d", userID)
-		s.cache.Delete(cacheKey)
+		s.profileCache.Delete(cacheKey) // Исправлено: используем profileCache вместо cache
 
 		return nil
 	})
