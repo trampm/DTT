@@ -82,11 +82,35 @@ var (
 		},
 	)
 
+	// DBInUseConnections показывает текущее количество используемых соединений с базой данных
+	DBInUseConnections = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "db_in_use_connections",
+			Help: "Number of in-use database connections",
+		},
+	)
+
 	// DBIdleConnections показывает текущее количество простаивающих соединений с базой данных
 	DBIdleConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "db_idle_connections",
 			Help: "Number of idle database connections",
+		},
+	)
+
+	// DBWaitCount показывает количество ожиданий соединений
+	DBWaitCount = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "db_wait_count",
+			Help: "Total number of times the pool had to wait for a new connection",
+		},
+	)
+
+	// DBWaitDuration показывает общее время ожидания соединений
+	DBWaitDuration = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "db_wait_duration_seconds",
+			Help: "Total wait duration for new connections in seconds",
 		},
 	)
 
@@ -109,7 +133,10 @@ func init() {
 	prometheus.MustRegister(ActiveConnections)
 	prometheus.MustRegister(HealthCheckDuration)
 	prometheus.MustRegister(DBOpenConnections)
+	prometheus.MustRegister(DBInUseConnections)
 	prometheus.MustRegister(DBIdleConnections)
+	prometheus.MustRegister(DBWaitCount)
+	prometheus.MustRegister(DBWaitDuration)
 	prometheus.MustRegister(DBMaxOpenConnections)
 }
 
