@@ -381,13 +381,13 @@ func (s *AuthService) AssignPermissionToRole(ctx context.Context, roleID, permis
 			return fmt.Errorf("assign permission to role:%w", customerrors.WrapError(err, "database_error", "Failed to assign permission to role"))
 		}
 		// Инвалидация кэша роли и прав всех пользователей с этой ролью
-		s.invalidateUsersWithRole(ctx, roleID)
+		s.invalidateUsersWithRole(roleID)
 		return nil
 	})
 }
 
 // invalidateUsersWithRole инвалидирует кэш прав пользователей с указанной ролью
-func (s *AuthService) invalidateUsersWithRole(ctx context.Context, roleID uint) {
+func (s *AuthService) invalidateUsersWithRole(roleID uint) {
 	var users []models.User
 	if err := s.db.Where("role_id = ?", roleID).Find(&users).Error; err == nil {
 		for _, user := range users {
