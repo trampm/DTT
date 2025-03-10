@@ -98,7 +98,7 @@ func setupRouter(cfg *config.Config, authService service.AuthServiceInterface, h
 		authGroup.POST("/register", middleware.BindJSON[models.RegisterRequest](), authHandler.Register)
 		authGroup.POST("/refresh", middleware.BindJSON[models.RefreshRequest](), authHandler.Refresh)
 		authGroup.POST("/logout", middleware.BindJSON[models.RefreshRequest](), authHandler.Logout)
-		authGroup.POST("/roles", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), middleware.BindJSON[models.RoleRequest](), authHandler.CreateRole)
+		authGroup.POST("/roles", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken))
 		authGroup.POST("/permissions", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), middleware.BindJSON[models.PermissionRequest](), authHandler.CreatePermission)
 		authGroup.POST("/roles/assign", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), middleware.BindJSON[models.RoleAssignmentRequest](), authHandler.AssignRoleToUser)
 		authGroup.POST("/permissions/assign", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), middleware.BindJSON[models.PermissionAssignmentRequest](), authHandler.AssignPermissionToRole)
@@ -192,7 +192,7 @@ func run() error {
 	// Запуск мониторинга пула соединений
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	db.StartMonitoring(ctx, 5*time.Second) // Обновление метрик каждые 5 секунд
+	db.StartMonitoring(ctx, cfg.Database.MonitoringInterval)
 
 	// Инициализация health checker
 	healthChecker := health.NewHealthChecker(db)

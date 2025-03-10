@@ -36,10 +36,11 @@ func (u *User) ValidateEmail() error {
 // swagger:model Role
 type Role struct {
 	BaseModel
-	Name        string `gorm:"uniqueIndex;not null" json:"name"`
-	Description string `json:"description"`
-	ParentID    *uint  `json:"parent_id,omitempty"`
-	Parent      *Role  `gorm:"foreignKey:ParentID" json:"parent,omitempty"`
+	Name         string `gorm:"uniqueIndex;not null" json:"name"`
+	Description  string `json:"description"`
+	ParentID     *uint  `json:"parent_id,omitempty"`
+	Parent       *Role  `gorm:"foreignKey:ParentID" json:"parent,omitempty"`
+	ParentRoleID *uint
 }
 
 // Permission представляет разрешение в системе

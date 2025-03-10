@@ -28,7 +28,7 @@ func NewAuthHandler(service service.AuthServiceInterface, cfg *config.Config) *A
 }
 
 // generateTokens генерирует access и refresh токены для пользователя
-func (h *AuthHandler) generateTokens(c *gin.Context, userID uint, roleName string, permissions []string) (string, string, error) {
+func (h *AuthHandler) generateTokens(c *gin.Context, userID uint, roleName string, permissions map[string]struct{}) (string, string, error) {
 	accessToken, err := utils.GenerateToken(userID, roleName, permissions, h.Config.JWTSecretKey, h.Config.AccessTokenLifetime)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to generate access token: %w", err)
@@ -76,7 +76,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Передаём контекст из запроса
 	if err := h.Service.RegisterUser(c.Request.Context(), req.Email, req.Password); err != nil {
 		if err == customerrors.ErrUserExists {
 			c.JSON(http.StatusConflict, gin.H{"error": "user already exists"})
@@ -137,7 +136,62 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, err := h.generateTokens(c, user.ID, userWithRole.Role.Name, permissions) // Modified line
+	accessToken, refreshToken, err := h.generateTokens(c, user.ID, userWithRole.Role.Name, permissions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+	})
+}
+
+// Refresh обновляет access-токен с помощью refresh-токена
+// @Summary Обновление токена
+// @Description Обновляет access-токен используя refresh-токен
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param refresh body models.RefreshRequest true "Refresh токен"
+// @Success 200 {object} map[string]string "Успешное обновление токена"
+// @Failure 400 {object} models.ErrorResponse "Неверный ввод"
+// @Failure 401 {object} models.ErrorResponse "Неверный или истекший refresh-токен"
+// @Failure 500 {object} models.ErrorResponse "Внутренняя ошибка сервера"
+// @Router /auth/refresh [post]
+// @Security Bearer
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	req, ok := middleware.GetRequest[models.RefreshRequest](c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+		return
+	}
+
+	userID, err := h.Service.ValidateRefreshToken(req.RefreshToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+		return
+	}
+
+	userWithRole, err := h.Service.GetUserWithRoleByID(userID)
+	if err != nil || userWithRole == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch user"})
+		return
+	}
+	if userWithRole.RoleID == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user role not assigned"})
+		return
+	}
+
+	permissions, err := h.Service.GetRolePermissionsRecursive(*userWithRole.RoleID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to fetch permissions: %v", err)})
+		return
+	}
+
+	accessToken, refreshToken, err := h.generateTokens(c, userWithRole.ID, userWithRole.Role.Name, permissions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -280,61 +334,6 @@ func (h *AuthHandler) AssignPermissionToRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "permission assigned successfully"})
-}
-
-// Refresh обновляет access-токен с помощью refresh-токена
-// @Summary Обновление токена
-// @Description Обновляет access-токен используя refresh-токен
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param refresh body models.RefreshRequest true "Refresh токен"
-// @Success 200 {object} map[string]string "Успешное обновление токена"
-// @Failure 400 {object} models.ErrorResponse "Неверный ввод"
-// @Failure 401 {object} models.ErrorResponse "Неверный или истекший refresh-токен"
-// @Failure 500 {object} models.ErrorResponse "Внутренняя ошибка сервера"
-// @Router /auth/refresh [post]
-// @Security Bearer
-func (h *AuthHandler) Refresh(c *gin.Context) {
-	req, ok := middleware.GetRequest[models.RefreshRequest](c)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
-		return
-	}
-
-	userID, err := h.Service.ValidateRefreshToken(req.RefreshToken)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
-		return
-	}
-
-	userWithRole, err := h.Service.GetUserWithRoleByID(userID)
-	if err != nil || userWithRole == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch user"})
-		return
-	}
-	if userWithRole.RoleID == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "user role not assigned"})
-		return
-	}
-
-	permissions, err := h.Service.GetRolePermissionsRecursive(*userWithRole.RoleID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to fetch permissions: %v", err)})
-		return
-	}
-
-	accessToken, refreshToken, err := h.generateTokens(c, userWithRole.ID, userWithRole.Role.Name, permissions)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"token_type":    "Bearer",
-	})
 }
 
 // Logout отзывает refresh-токен пользователя

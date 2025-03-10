@@ -135,6 +135,7 @@ func (db *DB) updatePoolMetrics() {
 
 // StartMonitoring запускает фоновый мониторинг состояния пула соединений
 func (db *DB) StartMonitoring(ctx context.Context, interval time.Duration) {
+	logger.Logger.Infof("Starting database pool monitoring with interval=%s", interval)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -305,8 +306,8 @@ func ConnectDB(cfg *config.Config) (*DB, error) {
 	dbInstance.updatePoolMetrics()
 
 	logger.Logger.Info(context.Background(), fmt.Sprintf(
-		"Database connected with maxOpenConns=%d, maxIdleConns=%d, connMaxLifetime=%s, connTimeout=%s, maxRetries=%d, retryDelay=%s",
-		cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.Database.ConnMaxLifetime, cfg.Database.ConnTimeout, cfg.Database.MaxRetries, cfg.Database.RetryDelay,
+		"Database connected with maxOpenConns=%d, maxIdleConns=%d, connMaxLifetime=%s, connTimeout=%s, maxRetries=%d, retryDelay=%s, monitoringInterval=%s",
+		cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.Database.ConnMaxLifetime, cfg.Database.ConnTimeout, cfg.Database.MaxRetries, cfg.Database.RetryDelay, cfg.Database.MonitoringInterval,
 	))
 
 	return dbInstance, nil

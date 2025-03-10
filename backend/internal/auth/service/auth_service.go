@@ -32,7 +32,7 @@ type AuthServiceInterface interface {
 	GenerateRefreshToken(ctx context.Context, userID uint, ipAddress string, userAgent string) (string, error)
 	ValidateRefreshToken(token string) (uint, error)
 	RevokeRefreshToken(ctx context.Context, token string) error
-	GetRolePermissionsRecursive(roleID uint) ([]string, error)
+	GetRolePermissionsRecursive(roleID uint) (map[string]struct{}, error)
 	GetProfile(userID uint) (*models.ProfileResponse, error)
 	UpdateProfile(ctx context.Context, userID uint, update *models.UpdateProfileRequest) error
 	UpdateAvatar(ctx context.Context, userID uint, avatarURL string) error
@@ -410,73 +410,40 @@ func (s *AuthService) GetUserWithRoleByID(userID uint) (*models.User, error) {
 }
 
 // GetRolePermissionsRecursive рекурсивно собирает все права роли, включая унаследованные, с использованием кэша
-func (s *AuthService) GetRolePermissionsRecursive(roleID uint) ([]string, error) {
-	cacheKey := fmt.Sprintf("role:%d", roleID)
-	if cached, ok := s.cache.Load(cacheKey); ok {
-		cachedPerms := cached.(cachedPermissions)
-		if time.Now().Before(cachedPerms.ExpiresAt) {
-			return cachedPerms.Permissions, nil
-		}
-		s.cache.Delete(cacheKey)
+func (s *AuthService) GetRolePermissionsRecursive(roleID uint) (map[string]struct{}, error) {
+	permissions := make(map[string]struct{})
+
+	// Здесь должна быть логика получения разрешений из базы данных
+	// Например, через GORM рекурсивно собираем все разрешения роли
+	var rolePerms []models.RolePermission
+	if err := s.db.Where("role_id = ?", roleID).Find(&rolePerms).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch role permissions: %w", err)
 	}
 
-	var permissions []string
-	visited := make(map[uint]bool)
-
-	var collectPermissions func(id uint) error
-	collectPermissions = func(id uint) error {
-		if visited[id] {
-			return nil
+	for _, rp := range rolePerms {
+		var perm models.Permission
+		if err := s.db.First(&perm, rp.PermissionID).Error; err != nil {
+			return nil, fmt.Errorf("failed to fetch permission: %w", err)
 		}
-		visited[id] = true
-
-		var rolePermissions []models.RolePermission
-		if err := s.db.Find(&rolePermissions, "role_id = ?", id).Error; err != nil {
-			//return s.handleDBError("find role permissions", err)
-			return fmt.Errorf("find role permissions:%w", customerrors.WrapError(err, "database_error", "Failed to find role permissions"))
-		}
-
-		for _, rp := range rolePermissions {
-			var perm models.Permission
-			if err := s.db.First(&perm, "id = ?", rp.PermissionID).Error; err == nil {
-				permissions = append(permissions, perm.Name)
-			}
-		}
-
-		var role models.Role
-		if err := s.db.First(&role, "id = ?", id).Error; err != nil {
-			//return s.handleDBError("find role", err)
-			return fmt.Errorf("find role:%w", customerrors.WrapError(err, "database_error", "Failed to find role"))
-		}
-
-		if role.ParentID != nil {
-			if err := collectPermissions(*role.ParentID); err != nil {
-				return err
-			}
-		}
-
-		return nil
+		permissions[perm.Name] = struct{}{}
 	}
 
-	if err := collectPermissions(roleID); err != nil {
-		return nil, err
+	// Рекурсивно добавить разрешения от родительских ролей, если они есть
+	var role models.Role
+	if err := s.db.First(&role, roleID).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch role: %w", err)
 	}
-
-	uniquePermissions := make([]string, 0, len(permissions))
-	seen := make(map[string]bool)
-	for _, perm := range permissions {
-		if !seen[perm] {
-			seen[perm] = true
-			uniquePermissions = append(uniquePermissions, perm)
+	if role.ParentRoleID != nil {
+		parentPerms, err := s.GetRolePermissionsRecursive(*role.ParentRoleID)
+		if err != nil {
+			return nil, err
+		}
+		for perm := range parentPerms {
+			permissions[perm] = struct{}{}
 		}
 	}
 
-	s.cache.Store(cacheKey, cachedPermissions{
-		Permissions: uniquePermissions,
-		ExpiresAt:   time.Now().Add(cacheTTL),
-	})
-
-	return uniquePermissions, nil
+	return permissions, nil
 }
 
 // GenerateRefreshToken генерирует новый refresh-токен с использованием транзакции
