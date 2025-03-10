@@ -201,12 +201,13 @@ func ConnectDB(cfg *config.Config) (*DB, error) {
 	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute) // Устанавливаем максимальное время простаивания соединения
 
-	ctx, _ := context.WithCancel(context.Background()) // Создаем контекст с отменой
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	dbInstance := &DB{
 		Client: db,
 		sqlDB:  sqlDB,
 		config: cfg,
-		ctx:    ctx, // Инициализируем поле ctx
+		ctx:    ctx,
 	}
 	dbInstance.updatePoolMetrics()
 	go dbInstance.startMetricsUpdater(1 * time.Minute) // Запускаем обновление метрик каждую минуту
