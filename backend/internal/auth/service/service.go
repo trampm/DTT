@@ -366,6 +366,7 @@ func (s *AuthService) AssignRoleToUser(ctx context.Context, userID, roleID uint)
 		s.profileCache.Delete(cacheKey)
 		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_roles:%d", userID))
 		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", userID))
+		s.invalidateUsersWithRole(roleID)
 		return nil
 	})
 }
@@ -449,18 +450,19 @@ func (s *AuthService) GetUserPermissions(ctx context.Context, userID uint) (map[
 // GetUserWithRole получает пользователя с ролью
 func (s *AuthService) GetUserWithRole(email string) (*models.User, error) {
 	var user models.User
-	if err := s.db.Preload("Role").First(&user, "email = ?", email).Error; err != nil {
-		//return nil, s.handleDBError("find user with role", err)
+	if err := s.db.Preload("Role", "name").First(&user, "email = ?", email).Error; err != nil {
+		logger.Logger.Errorf("Failed to fetch user with role for email=%s: %v", email, err)
 		return nil, fmt.Errorf("find user with role:%w", customerrors.WrapError(err, "database_error", "Failed to find user with role"))
 	}
 	return &user, nil
 }
 
+// GetUserWithRoleByID получает пользователя с ролью по ID
 func (s *AuthService) GetUserWithRoleByID(userID uint) (*models.User, error) {
 	var user models.User
-	if err := s.db.Preload("Role").First(&user, "id = ?", userID).Error; err != nil {
-		//return nil, s.handleDBError("find user with role by id", err)
-		return nil, fmt.Errorf("find user with role by id:%w", customerrors.WrapError(err, "database_error", "Failed to find user with role by id"))
+	if err := s.db.Preload("Role", "name").First(&user, userID).Error; err != nil {
+		logger.Logger.Errorf("Failed to fetch user with role for userID=%d: %v", userID, err)
+		return nil, fmt.Errorf("find user with role:%w", customerrors.WrapError(err, "database_error", "Failed to find user with role"))
 	}
 	return &user, nil
 }
@@ -567,12 +569,11 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 		}
 		s.profileCache.Delete(cacheKey)
 	}
-
 	var user models.User
-	if err := s.db.Preload("Role").Preload("Profile").First(&user, userID).Error; err != nil {
+	if err := s.db.Preload("Role", "name").Preload("Profile").First(&user, userID).Error; err != nil {
+		logger.Logger.Errorf("Failed to fetch user profile for userID=%d: %v", userID, err)
 		return nil, fmt.Errorf("get user profile:%w", customerrors.WrapError(err, "database_error", "Failed to get user profile"))
 	}
-
 	response := &models.ProfileResponse{
 		ID:    user.ID,
 		Email: user.Email,
@@ -585,12 +586,10 @@ func (s *AuthService) GetProfile(userID uint) (*models.ProfileResponse, error) {
 		response.Bio = user.Profile.Bio
 		response.Avatar = user.Profile.Avatar
 	}
-
 	s.profileCache.Store(cacheKey, cachedProfile{
 		Profile:   response,
 		ExpiresAt: time.Now().Add(cacheTTL),
 	})
-
 	return response, nil
 }
 
@@ -758,7 +757,7 @@ func (s *AuthService) validateToken(table interface{}, token string, extraCondit
 	}
 }
 
-// BatchCreateRoles создает несколько ролей пакетно
+// BatchCreateRoles пакетно создаёт роли
 func (s *AuthService) BatchCreateRoles(ctx context.Context, rolesData []struct {
 	Name        string
 	Description string
@@ -776,12 +775,13 @@ func (s *AuthService) BatchCreateRoles(ctx context.Context, rolesData []struct {
 	}
 	// Обновляем кэш для каждой созданной роли
 	for _, role := range roles {
-		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_roles:%d", role.ID))
+		cacheKey := fmt.Sprintf("role:%d", role.ID)
+		s.rolesPermissionsCache.Set(cacheKey, role, cache.DefaultExpiration)
 	}
 	return roles, nil
 }
 
-// BatchCreatePermissions создает несколько прав пакетно
+// BatchCreatePermissions пакетно создаёт разрешения
 func (s *AuthService) BatchCreatePermissions(ctx context.Context, permissionsData []struct {
 	Name        string
 	Description string
@@ -799,11 +799,13 @@ func (s *AuthService) BatchCreatePermissions(ctx context.Context, permissionsDat
 	}
 	// Обновляем кэш для каждого созданного права
 	for _, permission := range permissions {
-		s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", permission.ID))
+		cacheKey := fmt.Sprintf("permission:%d", permission.ID)
+		s.rolesPermissionsCache.Set(cacheKey, permission, cache.DefaultExpiration)
 	}
 	return permissions, nil
 }
 
+// BatchUpdatePermissions пакетно обновляет разрешения
 func (s *AuthService) BatchUpdatePermissions(ctx context.Context, permissionsData []struct {
 	ID          uint
 	Name        string
@@ -822,7 +824,10 @@ func (s *AuthService) BatchUpdatePermissions(ctx context.Context, permissionsDat
 			if err := tx.Save(perm).Error; err != nil {
 				return fmt.Errorf("failed to update permission ID=%d: %w", perm.ID, err)
 			}
-			s.rolesPermissionsCache.Delete(fmt.Sprintf("user_permissions:%d", perm.ID))
+			// Инвалидация кэша после обновления
+			cacheKey := fmt.Sprintf("permission:%d", perm.ID)
+			s.rolesPermissionsCache.Delete(cacheKey)
+			s.rolesPermissionsCache.Set(cacheKey, perm, cache.DefaultExpiration)
 		}
 		return nil
 	})
