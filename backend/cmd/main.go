@@ -104,6 +104,8 @@ func setupRouter(cfg *config.Config, authService service.AuthServiceInterface, h
 		authGroup.POST("/permissions/assign", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), middleware.BindJSON[models.PermissionAssignmentRequest](), authHandler.AssignPermissionToRole)
 		authGroup.POST("/password-reset", middleware.BindJSON[models.PasswordResetRequest](), authHandler.InitiatePasswordReset)
 		authGroup.POST("/password-reset/confirm", middleware.BindJSON[models.PasswordResetConfirm](), authHandler.ResetPassword)
+		authGroup.POST("/roles/batch", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), authHandler.BatchCreateRoles)
+		authGroup.POST("/permissions/batch", middleware.JWTMiddleware(cfg.JWTSecretKey, utils.ValidateToken), authHandler.BatchCreatePermissions)
 	}
 
 	profileGroup := r.Group("/profile")
@@ -137,7 +139,7 @@ func initializeServices(cfg *config.Config) (*database.DB, service.AuthServiceIn
 
 	dsn := cfg.GetMigrationDSN()
 	logger.Logger.Infof("Initializing AuthService with migration DSN: %s", dsn)
-	authService := service.NewAuthService(db.Client, db, dsn) // Уже работает с новым кэшем
+	authService := service.NewAuthService(db.Client, db, cfg.GetMigrationDSN())
 	if err := authService.InitializeDatabase(); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize database: %w", err)
 	}

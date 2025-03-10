@@ -491,3 +491,81 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "password has been reset successfully"})
 }
+
+// BatchCreateRoles обрабатывает запрос на пакетное создание ролей
+// @Summary Пакетное создание ролей
+// @Description Создает несколько ролей в системе пакетно
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param roles body []models.RoleRequest true "Массив данных ролей"
+// @Success 201 {object} map[string][]models.Role "Успешное создание ролей"
+// @Failure 400 {object} models.ErrorResponse "Неверный ввод"
+// @Failure 500 {object} models.ErrorResponse "Внутренняя ошибка сервера"
+// @Router /auth/roles/batch [post]
+// @Security Bearer
+func (h *AuthHandler) BatchCreateRoles(c *gin.Context) {
+	var req []models.RoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input: " + err.Error()})
+		return
+	}
+
+	rolesData := make([]struct {
+		Name        string
+		Description string
+	}, len(req))
+	for i, r := range req {
+		rolesData[i] = struct {
+			Name        string
+			Description string
+		}{Name: r.Name, Description: r.Description}
+	}
+
+	roles, err := h.Service.BatchCreateRoles(c.Request.Context(), rolesData)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to batch create roles: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"roles": roles})
+}
+
+// BatchCreatePermissions обрабатывает запрос на пакетное создание прав
+// @Summary Пакетное создание прав
+// @Description Создает несколько прав в системе пакетно
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param permissions body []models.PermissionRequest true "Массив данных прав"
+// @Success 201 {object} map[string][]models.Permission "Успешное создание прав"
+// @Failure 400 {object} models.ErrorResponse "Неверный ввод"
+// @Failure 500 {object} models.ErrorResponse "Внутренняя ошибка сервера"
+// @Router /auth/permissions/batch [post]
+// @Security Bearer
+func (h *AuthHandler) BatchCreatePermissions(c *gin.Context) {
+	var req []models.PermissionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input: " + err.Error()})
+		return
+	}
+
+	permissionsData := make([]struct {
+		Name        string
+		Description string
+	}, len(req))
+	for i, p := range req {
+		permissionsData[i] = struct {
+			Name        string
+			Description string
+		}{Name: p.Name, Description: p.Description}
+	}
+
+	permissions, err := h.Service.BatchCreatePermissions(c.Request.Context(), permissionsData)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to batch create permissions: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"permissions": permissions})
+}

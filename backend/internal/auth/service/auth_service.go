@@ -42,6 +42,14 @@ type AuthServiceInterface interface {
 	ValidateResetToken(token string) error
 	ResetPassword(ctx context.Context, token string, newPassword string) error
 	DB() DB
+	BatchCreateRoles(ctx context.Context, rolesData []struct {
+		Name        string
+		Description string
+	}) ([]*models.Role, error)
+	BatchCreatePermissions(ctx context.Context, permissionsData []struct {
+		Name        string
+		Description string
+	}) ([]*models.Permission, error)
 }
 
 type DB interface {
@@ -65,7 +73,7 @@ type TransactionRetrier interface {
 
 type AuthService struct {
 	db           DB
-	dbRaw        TransactionRetrier
+	dbRaw        *database.DB
 	cache        *cache.Cache
 	profileCache sync.Map
 	dsn          string
@@ -83,13 +91,13 @@ const (
 var _ AuthServiceInterface = (*AuthService)(nil)
 
 // NewAuthService инициализирует сервис с кэшем и запускает очистку кэша
-func NewAuthService(db DB, dbRaw TransactionRetrier, dsn string) AuthServiceInterface {
+func NewAuthService(db DB, dbRaw *database.DB, dsn string) AuthServiceInterface {
 	s := &AuthService{
 		db:           db,
 		dbRaw:        dbRaw,
-		cache:        cache.NewCache(dbRaw.(*database.DB)), // Инициализируем новый кэш
-		dsn:          dsn,
+		cache:        cache.NewCache(dbRaw),
 		profileCache: sync.Map{},
+		dsn:          dsn,
 	}
 	s.startCacheCleaner()
 	return s
@@ -702,4 +710,66 @@ func (s *AuthService) validateToken(table interface{}, token string, extraCondit
 	default:
 		return time.Time{}, fmt.Errorf("unsupported token type")
 	}
+}
+
+// BatchCreateRoles создает несколько ролей пакетно
+func (s *AuthService) BatchCreateRoles(ctx context.Context, rolesData []struct {
+	Name        string
+	Description string
+}) ([]*models.Role, error) {
+	roles := make([]*models.Role, len(rolesData))
+	for i, data := range rolesData {
+		roles[i] = &models.Role{
+			Name:        data.Name,
+			Description: data.Description,
+		}
+	}
+
+	err := s.dbRaw.BatchCreate(ctx, roles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch create roles: %w", err)
+	}
+
+	// Обновляем кэш для каждой созданной роли
+	for _, role := range roles {
+		s.cache.Roles.Store(int(role.ID), cache.Role{
+			ID:          int(role.ID),
+			Name:        role.Name,
+			Description: role.Description,
+			UpdatedAt:   time.Now(),
+		})
+	}
+
+	return roles, nil
+}
+
+// BatchCreatePermissions создает несколько прав пакетно
+func (s *AuthService) BatchCreatePermissions(ctx context.Context, permissionsData []struct {
+	Name        string
+	Description string
+}) ([]*models.Permission, error) {
+	permissions := make([]*models.Permission, len(permissionsData))
+	for i, data := range permissionsData {
+		permissions[i] = &models.Permission{
+			Name:        data.Name,
+			Description: data.Description,
+		}
+	}
+
+	err := s.dbRaw.BatchCreate(ctx, permissions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch create permissions: %w", err)
+	}
+
+	// Обновляем кэш для каждого созданного права
+	for _, permission := range permissions {
+		s.cache.Permissions.Store(int(permission.ID), cache.Permission{
+			ID:          int(permission.ID),
+			Name:        permission.Name,
+			Description: permission.Description,
+			UpdatedAt:   time.Now(),
+		})
+	}
+
+	return permissions, nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"time"
 
 	"backend/internal/config"
@@ -95,9 +97,16 @@ func (db *DB) retry(operation string, attempts int, delay time.Duration, fn func
 	return fmt.Errorf("failed after %d attempts for %s: %w", attempts, operation, err)
 }
 
-// WithTransactionRetry выполняет транзакцию с повторными попытками
+// WithTransactionRetry выполняет транзакцию с повторными попытками и экспоненциальной задержкой
 func (db *DB) WithTransactionRetry(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	return db.retry("transaction", db.config.Database.MaxRetries, db.config.Database.RetryDelay, func() error {
+	maxAttempts := db.config.Database.MaxRetries
+	baseDelay := db.config.Database.RetryDelay
+	if baseDelay == 0 {
+		baseDelay = 100 * time.Millisecond // Значение по умолчанию
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		tx := db.Client.(*gorm.DB).WithContext(ctx).Begin()
 		if tx.Error != nil {
 			return fmt.Errorf("failed to begin transaction: %w", tx.Error)
@@ -111,16 +120,67 @@ func (db *DB) WithTransactionRetry(ctx context.Context, fn func(tx *gorm.DB) err
 		}()
 
 		if err := fn(tx); err != nil {
+			lastErr = err
 			tx.Rollback()
-			return err
+
+			if !isRetryableError(err) {
+				return err
+			}
+
+			// Вычисляем экспоненциальную задержку с jitter
+			delay := calculateExponentialBackoff(attempt, baseDelay)
+			db.logWithLevel(db.config.Database.RetryAttemptLogLevel, "Transaction failed (attempt %d/%d), retrying after %v: %v", attempt, maxAttempts, delay, err)
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+				continue
+			}
 		}
 
 		if err := tx.Commit().Error; err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
+			lastErr = err
+			if !isRetryableError(err) {
+				return err
+			}
+			continue
 		}
 
-		return nil
-	})
+		return nil // Успешное выполнение
+	}
+
+	return fmt.Errorf("transaction failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// calculateExponentialBackoff вычисляет задержку с экспоненциальной прогрессией и jitter
+func calculateExponentialBackoff(attempt int, baseDelay time.Duration) time.Duration {
+	exponent := float64(attempt - 1)
+	delay := float64(baseDelay) * math.Pow(2, exponent)
+	jitter := float64(baseDelay) * rand.Float64() * 0.5
+	return time.Duration(delay + jitter)
+}
+
+// isRetryableError проверяет, является ли ошибка временной
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if pqErr, ok := err.(*pq.Error); ok {
+		switch pqErr.Code {
+		case "40001": // Serialization failure (deadlock)
+			metrics.DatabaseSpecificErrors.WithLabelValues("deadlock").Inc()
+			return true
+		case "57014": // Query canceled (timeout)
+			metrics.DatabaseSpecificErrors.WithLabelValues("timeout").Inc()
+			return true
+		case "55P03": // Lock not available
+			metrics.DatabaseSpecificErrors.WithLabelValues("lock").Inc()
+			return true
+		}
+	}
+	// Дополнительные проверки для общих ошибок
+	return err.Error() == "database is locked" || err.Error() == "connection timed out"
 }
 
 // updatePoolMetrics обновляет метрики пула соединений
@@ -154,6 +214,18 @@ func (db *DB) StartMonitoring(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// BatchCreate выполняет пакетное создание записей в одной транзакции
+func (db *DB) BatchCreate(ctx context.Context, values interface{}) error {
+	return db.WithTransactionRetry(ctx, func(tx *gorm.DB) error {
+		result := tx.Create(values)
+		if result.Error != nil {
+			return fmt.Errorf("batch create failed: %w", result.Error)
+		}
+		logger.Logger.Debugf("Batch created %d records", result.RowsAffected)
+		return nil
+	})
 }
 
 // Define custom type for context key
