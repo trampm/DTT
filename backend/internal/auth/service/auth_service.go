@@ -71,11 +71,6 @@ type AuthService struct {
 	dsn          string
 }
 
-type cachedPermissions struct {
-	Permissions []string
-	ExpiresAt   time.Time
-}
-
 type cachedProfile struct {
 	Profile   *models.ProfileResponse
 	ExpiresAt time.Time
