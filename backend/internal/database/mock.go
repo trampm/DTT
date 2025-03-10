@@ -51,7 +51,7 @@ func (m *MockDB) WithContext(ctx context.Context) *gorm.DB {
 }
 
 // Begin начинает транзакцию
-func (m *MockDB) Begin() *gorm.DB {
+func (m *MockDB) Begin(opts ...*sql.TxOptions) *gorm.DB {
 	args := m.Called()
 	if db, ok := args.Get(0).(*gorm.DB); ok {
 		return db
