@@ -1,3 +1,4 @@
 .env
+*.env
 output.txt
 backend.txt

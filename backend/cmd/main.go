@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -141,7 +142,7 @@ func initializeServices(cfg *config.Config) (*database.DB, service.AuthServiceIn
 	dsn := cfg.GetMigrationDSN()
 	logger.Logger.Infof("Initializing AuthService with migration DSN: %s", dsn)
 	authService := service.NewAuthService(db.Client, db, cfg.GetMigrationDSN())
-	if err := authService.InitializeDatabase(); err != nil {
+	if err := authService.InitializeDatabase(cfg); err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
@@ -232,7 +233,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		logger.Logger.Errorf("Application failed: %v", err)
+		log.Printf("Application failed: %v\n", err)
 		os.Exit(1)
 	}
 }

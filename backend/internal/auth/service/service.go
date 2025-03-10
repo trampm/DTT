@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"backend/internal/auth/models"
+	"backend/internal/config"
 	"backend/internal/database"
 	customerrors "backend/pkg/errors"
 	"backend/pkg/logger"
@@ -24,7 +27,7 @@ import (
 type AuthServiceInterface interface {
 	RegisterUser(ctx context.Context, email, password string) error
 	AuthenticateUser(email, password string) (*models.User, error)
-	InitializeDatabase() error
+	InitializeDatabase(cfg *config.Config) error
 	CreateRole(ctx context.Context, name, description string) (*models.Role, error)
 	CreatePermission(ctx context.Context, name, description string) (*models.Permission, error)
 	AssignRoleToUser(ctx context.Context, userID, roleID uint) error
@@ -114,6 +117,14 @@ func (s *AuthService) DB() DB {
 	return s.db
 }
 
+func generateCryptoString(length int) (string, error) {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 func (s *AuthService) hashPassword(password string) (string, error) {
 	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -132,7 +143,7 @@ func (s *AuthService) comparePasswords(hashedPassword, password string) error {
 }
 
 // InitializeDatabase инициализирует базу данных
-func (s *AuthService) InitializeDatabase() error {
+func (s *AuthService) InitializeDatabase(cfg *config.Config) error {
 	ctx := context.Background() // Создаем контекст
 	logger.Logger.Info(context.Background(), "Starting database initialization")
 
@@ -164,6 +175,22 @@ func (s *AuthService) InitializeDatabase() error {
 	if err := s.createAdminUserIfNotExists(); err != nil {
 		logger.Logger.Errorf("Failed to create admin user: %v", err)
 		return err
+	}
+
+	if cfg.JWTSecretKey == "" {
+		secret, err := generateCryptoString(64) // 512 бит для JWT
+		if err != nil {
+			return fmt.Errorf("failed to generate JWT secret: %w", err)
+		}
+		cfg.JWTSecretKey = secret
+	}
+
+	if cfg.CSRFSecret == "" {
+		secret, err := generateCryptoString(32) // 256 бит для CSRF
+		if err != nil {
+			return fmt.Errorf("failed to generate CSRF secret: %w", err)
+		}
+		cfg.CSRFSecret = secret
 	}
 
 	logger.Logger.Info(ctx, "Database initialization completed successfully")

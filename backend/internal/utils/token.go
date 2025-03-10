@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -24,7 +26,7 @@ func GenerateToken(userID uint, role string, permissions map[string]struct{}, se
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTokenLifetime)),
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
 	return token.SignedString([]byte(secretKey))
 }
 
@@ -32,18 +34,41 @@ func GenerateToken(userID uint, role string, permissions map[string]struct{}, se
 func ValidateToken(tokenString, secretKey string) (uint, string, map[string]struct{}, error) {
 	fmt.Printf("ValidateToken called. Token string: %s\n", tokenString)
 
+	// Первая попытка проверки с текущим секретом
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		// Проверяем алгоритм подписи перед возвратом ключа
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok || token.Method.Alg() != "HS512" {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(secretKey), nil
 	})
+
+	// Если ошибка связана с подписью, пробуем предыдущий секрет
+	if err != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		prevSecret := os.Getenv("PREV_JWT_SECRET_KEY")
+		if prevSecret == "" {
+			return 0, "", nil, fmt.Errorf("invalid token signature")
+		}
+
+		token, err = jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok || token.Method.Alg() != "HS512" {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(prevSecret), nil
+		})
+	}
+
+	// Обработка ошибок после всех попыток проверки
 	if err != nil {
-		fmt.Printf("ValidateToken: Error parsing token: %v\n", err)
+		fmt.Printf("ValidateToken error: %v\n", err)
 		return 0, "", nil, err
 	}
 
+	// Проверка валидности токена и claims
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
 		fmt.Printf("ValidateToken: Invalid claims or token\n")
-		return 0, "", nil, jwt.ErrSignatureInvalid
+		return 0, "", nil, jwt.ErrTokenInvalidClaims
 	}
 
 	fmt.Printf("ValidateToken: UserID=%d, Role=%s, Permissions=%v\n", claims.UserID, claims.Role, claims.Permissions)

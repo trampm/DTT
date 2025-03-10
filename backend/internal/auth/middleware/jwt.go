@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"backend/pkg/logger"
 	"net/http"
 	"strings"
 
@@ -31,7 +32,12 @@ func JWTMiddleware(secretKey string, validateToken func(string, string) (uint, s
 			c.Abort()
 			return
 		}
-
+		if err != nil {
+			logger.Logger.Errorf("Invalid JWT token: %v | IP: %s", err, c.ClientIP())
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
 		c.Set("user_id", userID)
 		c.Set("role", role)
 		c.Set("permissions", permissions)
