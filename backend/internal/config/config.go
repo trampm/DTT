@@ -48,21 +48,39 @@ func (e Environment) String() string {
 	}
 }
 
-// CORSConfig содержит настройки CORS
+type Config struct {
+	Environment         Environment     `mapstructure:"ENVIRONMENT" validate:"required"`
+	Database            DatabaseConfig  `mapstructure:",squash" validate:"required"`
+	AppPort             string          `mapstructure:"APP_PORT" validate:"required,startswith=:"`
+	JWTSecretKey        string          `mapstructure:"JWT_SECRET_KEY" validate:"required,min=64"`
+	CSRFSecret          string          `mapstructure:"CSRF_SECRET" validate:"required,min=32"`
+	CORS                CORSConfig      `mapstructure:",squash"`
+	RateLimit           RateLimitConfig `mapstructure:",squash"`
+	SwaggerHost         string          `mapstructure:"SWAGGER_HOST"`
+	LogLevel            string          `mapstructure:"LOG_LEVEL" validate:"required,oneof=debug info warn error"`
+	LogOutput           string          `mapstructure:"LOG_OUTPUT" validate:"required,oneof=console file"`
+	LogFormat           string          `mapstructure:"LOG_FORMAT" validate:"required,oneof=text json"`
+	LogFilePath         string          `mapstructure:"LOG_FILE_PATH" validate:"required_if_file"`
+	LogRotateMaxSize    int             `mapstructure:"LOG_ROTATE_MAX_SIZE" validate:"gte=1"`
+	LogRotateMaxBackups int             `mapstructure:"LOG_ROTATE_MAX_BACKUPS" validate:"gte=0"`
+	LogRotateMaxAge     int             `mapstructure:"LOG_ROTATE_MAX_AGE" validate:"gte=0"`
+	LogRotateCompress   bool            `mapstructure:"LOG_ROTATE_COMPRESS"`
+	Timezone            string          `mapstructure:"TIMEZONE" validate:"required"`
+	AccessTokenLifetime time.Duration   `mapstructure:"ACCESS_TOKEN_LIFETIME" validate:"required,min=1s"`
+}
+
 type CORSConfig struct {
-	AllowOrigins     []string      `validate:"required,min=1"`
-	AllowCredentials bool          `validate:"-"`
-	MaxAge           time.Duration `validate:"min=0"`
+	AllowOrigins     []string      `mapstructure:"CORS_ORIGINS" validate:"required,min=1"`
+	AllowCredentials bool          `mapstructure:"CORS_ALLOW_CREDENTIALS" validate:"-"`
+	MaxAge           time.Duration `mapstructure:"CORS_MAX_AGE" validate:"min=0"`
 }
 
-// RateLimitConfig содержит настройки для rate limiting
 type RateLimitConfig struct {
-	Requests int           `validate:"min=1"`
-	Period   time.Duration `validate:"min=1s"`
-	Enabled  bool          `validate:"-"`
+	Requests int           `mapstructure:"RATE_LIMIT_REQUESTS" validate:"min=1"`
+	Period   time.Duration `mapstructure:"RATE_LIMIT_PERIOD" validate:"min=1s"`
+	Enabled  bool          `mapstructure:"RATE_LIMIT_ENABLED" validate:"-"`
 }
 
-// DatabaseConfig содержит настройки базы данных
 type DatabaseConfig struct {
 	Host                 string        `mapstructure:"DB_HOST" validate:"required"`
 	Port                 int           `mapstructure:"DB_PORT" validate:"required,min=1,max=65535"`
@@ -82,41 +100,17 @@ type DatabaseConfig struct {
 	MonitoringInterval   time.Duration `mapstructure:"DB_MONITORING_INTERVAL" validate:"min=1s"`
 }
 
-// Config содержит все настройки приложения
-type Config struct {
-	Environment         Environment    `validate:"required"`
-	Database            DatabaseConfig `validate:"required"`
-	AppPort             string         `validate:"required,startswith=:"`
-	JWTSecretKey        string         `validate:"required,min=64"`
-	CSRFSecret          string         `validate:"required,min=32"`
-	CORS                CORSConfig
-	RateLimit           RateLimitConfig
-	SwaggerHost         string
-	LogLevel            string `validate:"required,oneof=debug info warn error"`
-	LogOutput           string `validate:"required,oneof=console file"`
-	LogFormat           string `validate:"required,oneof=text json"`
-	LogFilePath         string `validate:"required_if_file"`
-	LogRotateMaxSize    int    `validate:"gte=1"`
-	LogRotateMaxBackups int    `validate:"gte=0"`
-	LogRotateMaxAge     int    `validate:"gte=0"`
-	LogRotateCompress   bool
-	Timezone            string        `validate:"required"`
-	AccessTokenLifetime time.Duration `validate:"required,min=1s"`
-}
-
 // LoadConfig загружает конфигурацию из переменных окружения
 func LoadConfig() (*Config, error) {
-	log.Println("Loading configuration...")
-
 	v := viper.New()
 	v.SetConfigFile(".env")
 	v.AutomaticEnv()
-	log.Println("Setting default values...")
+
 	// Установка значений по умолчанию
 	v.SetDefault("ENVIRONMENT", "development")
 	v.SetDefault("APP_PORT", ":8080")
-	v.SetDefault("JWT_SECRET_KEY", "secret")
-	v.SetDefault("CSRF_SECRET", "csrfsecret")
+	v.SetDefault("JWT_SECRET_KEY", "09029d34ae683ad2e5f0265e9531b2d1cfab743c8cdf4ea08d98b02cb7b5d52e")
+	v.SetDefault("CSRF_SECRET", "f1a9bc703051dede40c9d2d087ff802ea6ba3d6fa2feac34c634f08c6e470e4c")
 	v.SetDefault("SWAGGER_HOST", "localhost:8080")
 	v.SetDefault("DB_HOST", "localhost")
 	v.SetDefault("DB_PORT", 5432)
@@ -130,7 +124,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("DB_CONN_TIMEOUT", "10s")
 	v.SetDefault("DB_MAX_RETRIES", 3)
 	v.SetDefault("DB_RETRY_DELAY", "1s")
-	v.SetDefault("DB_MONITORING_INTERVAL", "5s")
+	v.SetDefault("DB_MONITORING_INTERVAL", "30s")
 	v.SetDefault("CORS_ORIGINS", "http://localhost:3000")
 	v.SetDefault("CORS_MAX_AGE", "1h")
 	v.SetDefault("CORS_ALLOW_CREDENTIALS", true)
@@ -150,66 +144,39 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("DB_TIMEOUT_LOG_LEVEL", "warn")
 	v.SetDefault("DB_RETRY_ATTEMPT_LOG_LEVEL", "info")
 	v.SetDefault("ACCESS_TOKEN_LIFETIME", "30m")
-	log.Println("Default values set")
 
-	log.Println("Reading configuration file...")
+	// Читаем .env файл
 	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			log.Printf("Failed to read config file: %v\n", err)
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			fmt.Println("Warning: .env file not found, using defaults or environment variables")
+		} else {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
-		log.Println("No config file found, using environment variables")
-	}
-
-	log.Println("Config data before unmarshal:")
-	for key, value := range v.AllSettings() {
-		log.Printf("%s: %v\n", key, value)
+	} else {
+		fmt.Println("Successfully loaded .env file")
 	}
 
 	var cfg Config
-	log.Println("Unmarshalling configuration...")
-	if err := v.Unmarshal(&cfg, viper.DecodeHook(
-		mapstructure.ComposeDecodeHookFunc(
-			decodeEnvironmentHook, // Ваш кастомный хук
+	// Настраиваем viper с кастомным декодером
+	err := v.Unmarshal(&cfg, func(dc *mapstructure.DecoderConfig) {
+		dc.TagName = "mapstructure"
+		dc.DecodeHook = mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
-			mapstructure.StringToSliceHookFunc(","),
-		),
-	)); err != nil {
-		log.Printf("Failed to unmarshal config: %v\n", err)
+			mapstructure.TextUnmarshallerHookFunc(),
+		)
+	})
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	log.Println("Config after unmarshal:")
-	log.Printf("%+v\n", cfg)
+	// Выводим для отладки
+	fmt.Printf("Loaded config: %+v\n", cfg)
 
-	log.Println("Validating configuration...")
 	if err := cfg.validate(); err != nil {
-		log.Printf("Validation failed: %v\n", err)
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	log.Println("Configuration loaded and validated successfully")
 	return &cfg, nil
-}
-
-// decodeEnvironmentHook преобразует строку в Environment
-func decodeEnvironmentHook(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
-	log.Printf("Decoding environment: f=%v, t=%v, data=%v\n", f, t, data)
-	if f.Kind() != reflect.String {
-		return data, nil
-	}
-	if t != reflect.TypeOf(Environment(0)) {
-		return data, nil
-	}
-
-	var env Environment
-	err := env.UnmarshalText([]byte(data.(string)))
-	if err != nil {
-		log.Printf("Failed to decode environment: %v\n", err)
-		return nil, err
-	}
-	log.Printf("Decoded environment: %v\n", env)
-	return env, nil
 }
 
 // GetDSN возвращает строку подключения к базе данных для GORM
